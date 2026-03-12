@@ -38,43 +38,97 @@ USE_UV           = os.getenv("USE_UV",          "0") == "1"
 ALLOWED_ORIGINS  = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 # ── Query Classifier ──────────────────────────────────────────────────────────
-_LIVE_RE = re.compile(
+#
+# classify(query) → ("none"|"weather"|"time"|"search", tool_name|None)
+# Avoids LLM call #1 by picking the right tool directly from regex signals.
+
+_WEATHER_PAT = re.compile(
     r"\b(weather|forecast|temperature|rain|snow|wind|humidity|"
-    r"current|now|today\w*|tonight\w*|live|latest|recent|right\s+now|"
-    r"this\s+(week|month|year)|as\s+of|ongoing|breaking|"
-    r"price|stock|crypto|share|nse|bse|nasdaq|sensex|nifty|"
-    r"score|match|game|news|trend|"
-    r"search(\s+for)?|look\s+up|find\s+out|"
-    r"age\s+of|how\s+old\s+is|net\s+worth|"
-    r"profit|loss|closed|open|market|trading|"
-    r"what time|what('s| is) the time|time (is|it)|"
-    r"date today|current date|current time)\b",
+    r"feels like|hot|cold|sunny|cloudy|storm|drizzle|heatwave)\b",
     re.IGNORECASE,
 )
-_KNOWLEDGE_RE = re.compile(
-    r"^(hi+[!?.]?|hello+[!?.]?|hey+[!?.]?|howdy|yo+|sup|"
+_TIME_PAT = re.compile(
+    r"\b(what time|current time|time in|time at|time is|time now|"
+    r"what.s the time|time right now|local time|timezone|time zone|clock)\b",
+    re.IGNORECASE,
+)
+_SEARCH_PAT = re.compile(
+    r"\b("
+    r"latest|newest|recent|current|now|today|tonight|live|breaking|"
+    r"just released|announced|launched|updated|"
+    r"version|release|patch|drop|"
+    r"news|headline|update|trend|viral|"
+    r"price|cost|stock|crypto|share|nse|bse|nasdaq|sensex|nifty|"
+    r"score|match|result|standings|"
+    r"who is|who are|who was|who won|who leads|who runs|who owns|"
+    r"what is the latest|what happened|"
+    r"search|look up|find out|google|"
+    r"age of|how old is|net worth|salary|"
+    r"profit|loss|revenue|earnings|quarterly|"
+    r"versus|compare|difference|"
+    r"best|top|review|rating|ranked|"
+    r"files|file|cases|case|scandal|incident|history|story|report|"
+    r"leaked|documents|footage|tape|"
+    r"what did|what does|how much|how many|"
+    r"who|launch|event"
+    r")\b",
+    re.IGNORECASE,
+)
+_GREET_PAT = re.compile(
+    r"^(hi+[!?. ]*|hello+[!?. ]*|hey+[!?. ]*|howdy|yo+|sup|"
     r"good\s?(morning|afternoon|evening|night)|"
-    r"how are you|what('s| is) up|nice to meet|"
-    r"thanks?[!?.]?|thank you[!?.]?|ok[!?.]?|okay[!?.]?|"
-    r"sure[!?.]?|great[!?.]?|cool[!?.]?|awesome[!?.]?|"
-    r"bye[!?.]?|goodbye[!?.]?|see you[!?.]?|cya[!?.]?|"
-    r"what (is|are|was|were|does|do|did|means?|mean) (?!the (age|net worth)).{1,80}|"
-    r"(explain|describe|define|tell me about|how does|how do|"
-    r"why (is|are|does|do)|when (was|did|is)|where (is|was)|which (is|are)) .{1,80})$",
+    r"how are you|what.?s up|nice to meet|"
+    r"thanks?[!?. ]*|thank you[!?. ]*|ok[!?. ]*|okay[!?. ]*|"
+    r"sure[!?. ]*|great[!?. ]*|cool[!?. ]*|awesome[!?. ]*|"
+    r"bye[!?. ]*|goodbye[!?. ]*|see you|cya)$",
     re.IGNORECASE,
 )
+_EXPLAIN_PAT = re.compile(
+    r"^(what (is|are|was|were|does|do|did|means?|mean) (?!the (age|net worth))|"
+    r"explain |describe |define |tell me about |how does |how do |"
+    r"why (is|are|does|do) |when (was |did |is )|"
+    r"where (is |was )|which (is |are ))",
+    re.IGNORECASE,
+)
+# Single capitalised word that looks like a proper noun (e.g. Epstein, Bitcoin, Sensex)
+_PROPER_NOUN_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
+
+def classify(query: str) -> tuple:
+    q = query.strip()
+    if _GREET_PAT.match(q) or len(q) <= 8:
+        return ("none", None)
+    # Pure timeless explanations with no live-data signals → knowledge
+    if _EXPLAIN_PAT.match(q) and not _SEARCH_PAT.search(q) and not _WEATHER_PAT.search(q):
+        return ("none", None)
+    # Weather check (more specific, before generic search)
+    if _WEATHER_PAT.search(q):
+        return ("weather", "get_weather")
+    # Time check
+    if _TIME_PAT.search(q):
+        return ("time", "get_current_time")
+    # Explicit live-data signals
+    if _SEARCH_PAT.search(q):
+        return ("search", "internet_search")
+    # Single proper noun like "Epstein", "Bitcoin", "Sensex" → search
+    if _PROPER_NOUN_RE.search(q):
+        return ("search", "internet_search")
+    # Long open-ended query the model can't answer from training
+    if len(q) > 40:
+        return ("search", "internet_search")
+    return ("none", None)
 
 def needs_tools(query: str) -> bool:
-    q = query.strip()
-    if _LIVE_RE.search(q):
-        return True
-    if _KNOWLEDGE_RE.match(q) or len(q) <= 30:
-        return False
-    return False
+    kind, _ = classify(query)
+    return kind != "none"
+
+def auto_tool_hint(query: str) -> Optional[str]:
+    """Return tool name when classifier is confident, skip LLM routing call."""
+    _, tool = classify(query)
+    return tool
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
 _TIME_RE    = re.compile(r"\b(current|now|today|tonight|live|latest|recent|right\s+now|this\s+(week|month|year)|at the moment|as of|ongoing|present(ly)?|what time|what('s| is) the time|time (is|it is)|date (is|today))\b", re.IGNORECASE)
-_WEATHER_RE = re.compile(r"\b(weather|forecast|rain|snow|wind|humidity|feels like|temperature)\b", re.IGNORECASE)
+_WEATHER_RE = _WEATHER_PAT   # reuse same pattern
 
 def needs_time_ctx(q: str) -> bool:
     return bool(_TIME_RE.search(q)) or bool(_WEATHER_RE.search(q))
@@ -245,6 +299,7 @@ class ChatRequest(BaseModel):
     query:       str
     force_tools: bool                  = False
     tool_hint:   Optional[str]         = None   # e.g. "internet_search"
+    tool_arg:    Optional[str]         = None   # raw user arg (e.g. "epstein file")
     history:     List[HistoryMessage]  = []
 
 # ── Agent stream ──────────────────────────────────────────────────────────────
@@ -252,12 +307,28 @@ async def agent_stream(
     query:       str,
     force_tools: bool                 = False,
     tool_hint:   Optional[str]        = None,
+    tool_arg:    Optional[str]        = None,
     history:     List[HistoryMessage] = [],
 ):
     registry  = app_state["registry"]
     raw_tools = app_state["raw_tools"]
 
     use_tools = force_tools or needs_tools(query)
+
+    # If no tool_hint given, try to auto-detect from the query classifier.
+    # This lets us skip LLM call #1 for obvious queries like "latest X", "weather in Y".
+    if not tool_hint and not tool_arg and use_tools:
+        tool_hint = auto_tool_hint(query)
+        # For auto-detected search, use the original query as the search term
+        if tool_hint == "internet_search":
+            tool_arg = query
+        elif tool_hint == "get_weather":
+            # Extract location: last noun-phrase after "in/at/for"
+            m = re.search(r"\b(?:in|at|for)\s+([\w\s,]+?)\??$", query, re.IGNORECASE)
+            tool_arg = m.group(1).strip() if m else query
+        elif tool_hint == "get_current_time":
+            m = re.search(r"\b(?:in|at)\s+([\w\s/]+?)\??$", query, re.IGNORECASE)
+            tool_arg = m.group(1).strip() if m else "UTC"
 
     # Build history prefix — keep last 20 messages (10 pairs)
     hist_msgs = [
@@ -293,56 +364,108 @@ async def agent_stream(
     )
     dedup = CallDedup()
 
+    # Helper classes for synthetic tool calls
+    class _Fn:
+        def __init__(self, name, arguments): self.name = name; self.arguments = arguments
+    class _TC:
+        def __init__(self, tc_id, fn): self.id = tc_id; self.function = fn
+
+    # ── FAST PATH: tool_hint set → skip LLM call #1, fire tool immediately ──
+    if tool_hint and registry.client_for(tool_hint):
+        yield sse_debug(f"fast-path — skipping LLM call, firing {tool_hint} directly")
+
+        # Use raw tool_arg if provided (frontend sends this for slash commands).
+        # Fall back to full query only if tool_arg is missing.
+        arg = tool_arg or query
+
+        # Map tool name → its expected argument schema
+        if tool_hint == "internet_search":
+            tool_args = {"query": arg}
+        elif tool_hint == "get_weather":
+            tool_args = {"location": arg}
+        elif tool_hint == "get_current_time":
+            tool_args = {"timezone": arg if arg else "UTC"}
+        elif tool_hint == "read_doc_content":
+            tool_args = {"document_id": arg}
+        elif tool_hint == "edit_doc_content":
+            tool_args = {"document_id": arg, "content": ""}
+        else:
+            tool_args = {"query": arg}
+        tool_id     = f"fast_{tool_hint}_0"
+
+        tc = _TC(tool_id, _Fn(tool_hint, json.dumps(tool_args)))
+
+        # Emit tool_call SSE immediately (no wait)
+        tid, result, events = await execute_tool_sse(tc, registry, dedup)
+        for line in events.split("\n\n"):
+            if line.strip():
+                yield line + "\n\n"
+
+        # Build messages with the tool result for the summarization LLM call
+        messages.append({
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": tool_id, "type": "function",
+                "function": {"name": tool_hint, "arguments": json.dumps(tool_args)},
+            }],
+        })
+        messages.append({"role": "tool", "tool_call_id": tid, "content": result})
+
+        # ── LLM call: summarize the tool result (streamed, capped shorter) ─────
+        yield sse_debug("summarizing result")
+        # Inject a tight instruction so the model answers concisely and fast
+        messages[0]["content"] += (
+            "\nBe concise. Answer in 3-5 sentences max. No filler phrases."
+        )
+        stream = await asyncio.to_thread(llm_chat, messages, None, True)
+        answer = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                answer += delta
+                yield sse({"type": "token", "text": delta})
+        yield sse_answer(answer)
+        yield "data: [DONE]\n\n"
+        return
+
+    # ── NORMAL PATH: let LLM decide which tool(s) to call ────────────────────
     for iteration in range(1, MAX_ITERATIONS + 1):
         yield sse_debug(f"LLM call #{iteration}")
 
-        # ── Stream this LLM call so tokens appear immediately ────────────────
         stream = await asyncio.to_thread(llm_chat, messages, raw_tools, True)
 
-        # Accumulate streamed chunks; collect tool_calls in parallel
         raw            = ""
-        tool_calls_acc = {}   # index -> {id, name, arguments}
+        tool_calls_acc = {}
 
         for chunk in stream:
             choice = chunk.choices[0]
             delta  = choice.delta
 
-            # Accumulate text content
             if delta.content:
                 raw += delta.content
                 yield sse({"type": "token", "text": delta.content})
 
-            # Accumulate tool call deltas
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
                     idx = tc_delta.index
                     if idx not in tool_calls_acc:
-                        tool_calls_acc[idx] = {
-                            "id":        tc_delta.id or "",
-                            "name":      tc_delta.function.name or "" if tc_delta.function else "",
-                            "arguments": "",
-                        }
+                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
                     if tc_delta.id:
                         tool_calls_acc[idx]["id"] = tc_delta.id
                     if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_calls_acc[idx]["name"] += tc_delta.function.name
+                        # name arrives only in the FIRST chunk — set, never append
+                        if tc_delta.function.name and not tool_calls_acc[idx]["name"]:
+                            tool_calls_acc[idx]["name"] = tc_delta.function.name
+                        # arguments stream across many chunks — always append
                         if tc_delta.function.arguments:
                             tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
 
-        # No tool calls → final answer already streamed token-by-token
         if not tool_calls_acc:
             yield sse_answer(raw)
             yield "data: [DONE]\n\n"
             return
 
         yield sse_debug(f"Round {iteration} — {len(tool_calls_acc)} tool call(s)")
-
-        # Build fake tool_call objects compatible with execute_tool_sse
-        class _Fn:
-            def __init__(self, name, arguments): self.name = name; self.arguments = arguments
-        class _TC:
-            def __init__(self, id, fn): self.id = id; self.function = fn
 
         tc_list = [
             _TC(v["id"], _Fn(v["name"], v["arguments"]))
@@ -402,6 +525,7 @@ async def chat_stream(req: ChatRequest):
             req.query.strip(),
             req.force_tools,
             req.tool_hint,
+            req.tool_arg,
             req.history,
         ),
         media_type="text/event-stream",

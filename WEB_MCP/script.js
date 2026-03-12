@@ -346,8 +346,9 @@ async function send(){
 
   let query=raw, forceTools=false, toolHint=null;
 
+  let toolArg = null;   // raw user arg, sent separately so backend skips parsing
+
   if(slashTool){
-    // raw IS the argument — no prefix stripping needed (pill holds the cmd)
     const arg = raw.trim();
 
     // Guard: require argument for all except /time
@@ -357,17 +358,18 @@ async function send(){
       return;
     }
 
+    toolArg    = arg || null;
     query      = slashTool.template(arg);
     forceTools = true;
     toolHint   = slashTool.toolHint;
-    dlog("info",`[slash] /${slashTool.cmd} → tool_hint=${toolHint}`);
+    dlog("info",`[slash] /${slashTool.cmd} arg="${toolArg}" → tool_hint=${toolHint}`);
   }
+
+  // Capture displayText BEFORE resetSlash clears slashTool
+  const displayText = slashTool ? `/${slashTool.cmd} ${raw}`.trim() : raw;
 
   qEl.value=""; qEl.style.height="24px";
   resetSlash(); sbtn.disabled=true;
-
-  // Show pill name + arg in user bubble (e.g. "/search kimi2.5")
-  const displayText = slashTool ? `/${slashTool.cmd} ${raw}`.trim() : raw;
   addUser(displayText);
   dlog("info","→ "+query);
 
@@ -384,7 +386,8 @@ async function send(){
       body:JSON.stringify({
         query,
         force_tools: forceTools,
-        tool_hint:   toolHint,          // ← new: preferred tool name
+        tool_hint:   toolHint,
+        tool_arg:    toolArg,           // raw arg so backend skips parsing
         history:     chatHistory.slice(0,-1), // send history EXCLUDING current msg
       }),
     });
