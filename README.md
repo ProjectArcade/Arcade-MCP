@@ -37,6 +37,11 @@ This project is intended for:
 
 *Command-line interface showing real-time interaction with the MCP-powered agent. Users can query their GitHub repositories, file system, and other tools through natural language. The interface displays tool execution progress, results, and formatted responses.*
 
+### Web Search Tool
+![Web Search](./docs/images/webSearch.png)
+
+
+
 ### System Architecture Overview
 
 ```
