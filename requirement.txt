@@ -1,7 +1,0 @@
-groq
-python-dotenv
-prompt-toolkit
-httpx
-pytz
-mcp[cli]==1.8.0
-pydantic

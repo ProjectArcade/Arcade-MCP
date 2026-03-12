@@ -17,157 +17,76 @@ from mcp.types import TextContent
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
-LLAMA_CPP_URL   = "http://127.0.0.1:8080/v1"
-MODEL           = "qwen3"
-MAX_TOKENS      = 1024   # generation budget (NOT context size)
-CTX_LIMIT       = 4096   # must match your llama.cpp --ctx-size
-CTX_SAFETY      = 0.80   # use at most 80 % of context for the prompt
-MAX_PROMPT_CHARS = int(CTX_LIMIT * CTX_SAFETY * 3.5)  # ~3.5 chars per token
-TOOL_RESULT_CAP = 600    # max chars stored per tool result in history
-MAX_ITERATIONS  = 10
-
-# ── Thinking-model detection ──────────────────────────────────────────────────
-THINKING_MODELS = {
-    "qwq", "qwen3",
-    "deepseek-r1", "deepseek-r1-distill",
-    "marco-o1", "sky-t1",
-}
-
-def is_thinking_model(name: str) -> bool:
-    return any(tm in name.lower() for tm in THINKING_MODELS)
-
-_env = os.getenv("SHOW_THINKING", "").strip()
-SHOW_THINKING = (True  if _env == "1" else
-                 False if _env == "0" else
-                 is_thinking_model(MODEL))
+LLAMA_CPP_URL    = "http://127.0.0.1:8080/v1"
+MODEL            = "qwen3"
+MAX_TOKENS       = 1024
+CTX_LIMIT        = 8192          # matches your -c 8192
+CTX_SAFETY       = 0.80
+MAX_PROMPT_CHARS = int(CTX_LIMIT * CTX_SAFETY * 3.5)
+TOOL_RESULT_CAP  = 800
+MAX_ITERATIONS   = 10
 
 
-# ── Keyword patterns ──────────────────────────────────────────────────────────
-CURRENT_RE = re.compile(
+# ════════════════════════════════════════════════════════════════════════════
+#  QUERY CLASSIFIER  — pure Python, zero LLM tokens spent on routing
+# ════════════════════════════════════════════════════════════════════════════
+
+# Requires live / real-time data
+_LIVE_RE = re.compile(
+    r"\b("
+    r"weather|forecast|temperature|rain|snow|wind|humidity|"
+    r"current|now|today|tonight|live|latest|recent|right now|"
+    r"this (week|month|year)|as of|ongoing|breaking|"
+    r"price|stock|crypto|score|match|game|news|trend|"
+    r"search (for)?|look up|find out"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Pure knowledge — answerable from training
+_KNOWLEDGE_RE = re.compile(
+    r"^("
+    r"hi+[!?.]?|hello+[!?.]?|hey+[!?.]?|howdy|yo+|sup|"
+    r"good\s?(morning|afternoon|evening|night)|"
+    r"how are you|what('s| is) up|nice to meet|"
+    r"thanks?[!?.]?|thank you[!?.]?|ok[!?.]?|okay[!?.]?|"
+    r"sure[!?.]?|great[!?.]?|cool[!?.]?|awesome[!?.]?|"
+    r"bye[!?.]?|goodbye[!?.]?|see you[!?.]?|cya[!?.]?|"
+    r"what (is|are|was|were|does|do|did|means?|mean) .{1,80}|"
+    r"(explain|describe|define|tell me about|how does|how do|"
+    r"why (is|are|does|do)|who (is|was|are|were)|"
+    r"when (was|did|is)|where (is|was)|which (is|are)) .{1,80}"
+    r")$",
+    re.IGNORECASE,
+)
+
+class QueryMode:
+    NO_TOOLS   = "no_tools"
+    WITH_TOOLS = "with_tools"
+
+def classify(query: str) -> QueryMode:
+    q = query.strip()
+    if _LIVE_RE.search(q):
+        return QueryMode.WITH_TOOLS
+    if _KNOWLEDGE_RE.match(q) or len(q) <= 30:
+        return QueryMode.NO_TOOLS
+    return QueryMode.NO_TOOLS   # safe default
+
+
+# ── Time helpers ──────────────────────────────────────────────────────────────
+_TIME_RE = re.compile(
     r"\b(current|now|today|tonight|live|latest|recent|right now|"
     r"this (week|month|year)|at the moment|as of|ongoing|"
     r"present(ly)?|real[-\s]?time|up[-\s]?to[-\s]?date)\b",
     re.IGNORECASE,
 )
-WEATHER_RE = re.compile(
-    r"\b(weather|temperature|forecast|rain|snow|wind|humidity|feels like)\b",
+_WEATHER_RE = re.compile(
+    r"\b(weather|forecast|rain|snow|wind|humidity|feels like|temperature)\b",
     re.IGNORECASE,
 )
 
-
-# ── System prompt ─────────────────────────────────────────────────────────────
-def build_system_prompt(injected_context: str = "") -> str:
-    return f"""You are Aria, a concise and professional AI assistant.
-{injected_context}
-════════════════════════ TOOL POLICY ════════════════════════
-Tools: internet_search | get_weather | get_current_time |
-       read_doc_content | edit_doc_content
-
-USE a tool ONLY when:
-  • internet_search  → live news, prices, scores, post-cutoff facts
-  • get_current_time → user explicitly asks for time/date
-  • get_weather      → explicit weather/forecast question
-  • doc tools        → reading or editing files
-
-DO NOT use a tool when:
-  ✗ You already know the answer (definitions, history, concepts, math)
-  ✗ You already called that tool with the same args this turn
-  ✗ The question is conversational ("hi", "thanks", etc.)
-
-Decision rule: "Can I answer confidently from training?" → YES: answer directly.
-═════════════════════════════════════════════════════════════
-Reply concisely. Use markdown when helpful. Never hallucinate.
-"""
-
-
-# ── LLM client ────────────────────────────────────────────────────────────────
-llm = OpenAI(base_url=LLAMA_CPP_URL, api_key="not-needed")
-
-
-def estimate_chars(messages: list[dict]) -> int:
-    """Rough character count of the serialised message list."""
-    return sum(
-        len(json.dumps(m.get("content") or "")) +
-        len(json.dumps(m.get("tool_calls") or ""))
-        for m in messages
-    )
-
-
-def trim_messages(messages: list[dict]) -> list[dict]:
-    """
-    Drop the OLDEST tool-call + tool-result pairs (keeping system + user)
-    until the prompt fits within MAX_PROMPT_CHARS.
-    """
-    if estimate_chars(messages) <= MAX_PROMPT_CHARS:
-        return messages
-
-    # Separate fixed head (system, first user) from the rolling middle
-    head  = messages[:2]   # system + first user message
-    tail  = messages[2:]
-
-    while tail and estimate_chars(head + tail) > MAX_PROMPT_CHARS:
-        # Drop the first assistant tool-call block and its tool results
-        # Find next assistant message with tool_calls and skip until next user/assistant without tool_calls
-        dropped = False
-        for i, m in enumerate(tail):
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                # drop this assistant block + all following tool result messages
-                j = i + 1
-                while j < len(tail) and tail[j].get("role") == "tool":
-                    j += 1
-                tail = tail[j:]
-                dropped = True
-                break
-        if not dropped:
-            break   # nothing left to drop
-
-    trimmed = head + tail
-    print(f"  ✂️  Context trimmed → {estimate_chars(trimmed):,} chars")
-    return trimmed
-
-
-def chat(messages: list[dict], tools=None):
-    safe_messages = trim_messages(messages)
-    params = {
-        "model":       MODEL,
-        "messages":    safe_messages,
-        "temperature": 0.2,
-        "max_tokens":  MAX_TOKENS,
-    }
-    if tools:
-        params["tools"]       = tools
-        params["tool_choice"] = "auto"
-    return llm.chat.completions.create(**params)
-
-
-# ── Parse <think> blocks ──────────────────────────────────────────────────────
-_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
-
-def parse_response(raw: str) -> tuple[str, str]:
-    thinks  = _THINK_RE.findall(raw)
-    answer  = _THINK_RE.sub("", raw).strip()
-    return "\n".join(t.strip() for t in thinks), answer
-
-
-def print_thinking(thinking: str):
-    if not thinking:
-        return
-    if not SHOW_THINKING:
-        print(f"  💭 [thinking: {thinking.count(chr(10))+1} lines — SHOW_THINKING=1 to show]")
-        return
-    w = 72
-    print("\n" + "─" * w)
-    print("  💭  THINKING")
-    print("─" * w)
-    for line in thinking.splitlines():
-        print(f"  {line}")
-    print("─" * w)
-
-
-# ── Time context injection ────────────────────────────────────────────────────
 def needs_time_context(query: str) -> bool:
-    return bool(CURRENT_RE.search(query)) or bool(WEATHER_RE.search(query))
-
+    return bool(_TIME_RE.search(query)) or bool(_WEATHER_RE.search(query))
 
 def build_time_context() -> str:
     now_utc = datetime.now(timezone.utc)
@@ -182,7 +101,70 @@ def build_time_context() -> str:
     )
 
 
-# ── Tool registry (built once at startup) ─────────────────────────────────────
+# ── System prompts ────────────────────────────────────────────────────────────
+_SYSTEM_CHAT = (
+    "You are Aria, a concise professional AI assistant. "
+    "Answer clearly. Use markdown when it adds value. "
+    "Never make up facts."
+)
+
+def build_system_tools(injected: str = "") -> str:
+    return (
+        f"You are Aria, a concise professional AI assistant.\n{injected}\n"
+        "Use tools ONLY for live/current data (weather, news, prices, time). "
+        "Never call a tool for general knowledge. "
+        "Never repeat a tool call with identical arguments. "
+        "Answer concisely using markdown when helpful."
+    )
+
+
+# ── LLM client ────────────────────────────────────────────────────────────────
+llm = OpenAI(base_url=LLAMA_CPP_URL, api_key="not-needed")
+
+def chat(messages: list, tools=None):
+    params: dict = {
+        "model":       MODEL,
+        "messages":    trim_messages(messages),
+        "temperature": 0.2,
+        "max_tokens":  MAX_TOKENS,
+    }
+    if tools:
+        params["tools"]       = tools
+        params["tool_choice"] = "auto"
+    return llm.chat.completions.create(**params)
+
+
+# ── Context trimmer ───────────────────────────────────────────────────────────
+def estimate_chars(messages: list) -> int:
+    return sum(
+        len(json.dumps(m.get("content") or "")) +
+        len(json.dumps(m.get("tool_calls") or ""))
+        for m in messages
+    )
+
+def trim_messages(messages: list) -> list:
+    if estimate_chars(messages) <= MAX_PROMPT_CHARS:
+        return messages
+    head = messages[:2]
+    tail = messages[2:]
+    while tail and estimate_chars(head + tail) > MAX_PROMPT_CHARS:
+        dropped = False
+        for i, m in enumerate(tail):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                j = i + 1
+                while j < len(tail) and tail[j].get("role") == "tool":
+                    j += 1
+                tail = tail[j:]
+                dropped = True
+                break
+        if not dropped:
+            break
+    trimmed = head + tail
+    print(f"  ✂️  Context trimmed → {estimate_chars(trimmed):,} chars")
+    return trimmed
+
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
 class ToolRegistry:
     def __init__(self):
         self._map: dict[str, object] = {}
@@ -222,9 +204,8 @@ async def execute_tool(tc, registry: ToolRegistry, dedup: CallDedup):
     except Exception:
         tool_input = {}
 
-    # Dedup guard
     if dedup.seen(tool_name, tool_input):
-        note = f"[duplicate call to {tool_name} skipped]"
+        note = f"[duplicate {tool_name} skipped]"
         print(f"  ⚠️  {note}")
         return tool_id, json.dumps({"note": note})
     dedup.mark(tool_name, tool_input)
@@ -238,57 +219,53 @@ async def execute_tool(tc, registry: ToolRegistry, dedup: CallDedup):
         return tool_id, err
 
     try:
-        output = await client.call_tool(tool_name, tool_input)
-        texts  = [i.text for i in output.content if isinstance(i, TextContent)]
-        full   = json.dumps(texts)
-
-        # Cap what we store in history to avoid context overflow
+        output  = await client.call_tool(tool_name, tool_input)
+        texts   = [i.text for i in output.content if isinstance(i, TextContent)]
+        full    = json.dumps(texts)
         stored  = full[:TOOL_RESULT_CAP] + ("…[truncated]" if len(full) > TOOL_RESULT_CAP else "")
         preview = stored[:140].replace("\n", " ")
         print(f"  ✅ {preview}{'…' if len(stored) > 140 else ''}")
         return tool_id, stored
-
     except Exception as e:
         err = json.dumps({"error": str(e)})
         print(f"  ❌ {e}")
         return tool_id, err
 
 
-# ── Agent loop ────────────────────────────────────────────────────────────────
-async def run(query: str, tools: list, registry: ToolRegistry) -> str:
+# ── No-tools path ─────────────────────────────────────────────────────────────
+async def run_no_tools(query: str) -> str:
+    resp = chat([
+        {"role": "system", "content": _SYSTEM_CHAT},
+        {"role": "user",   "content": query},
+    ])
+    return resp.choices[0].message.content or ""
 
+
+# ── With-tools path ───────────────────────────────────────────────────────────
+async def run_with_tools(query: str, tools: list, registry: ToolRegistry) -> str:
     injected = build_time_context() if needs_time_context(query) else ""
     messages: list[dict] = [
-        {"role": "system", "content": build_system_prompt(injected)},
+        {"role": "system", "content": build_system_tools(injected)},
         {"role": "user",   "content": query},
     ]
-
     dedup = CallDedup()
 
     for iteration in range(1, MAX_ITERATIONS + 1):
-
         resp = chat(messages, tools=tools)
         msg  = resp.choices[0].message
         raw  = msg.content or ""
 
-        thinking, clean = parse_response(raw)
-        if thinking:
-            print_thinking(thinking)
-
         if not msg.tool_calls:
-            return clean
+            return raw
 
         print(f"\n  ⚙️  Round {iteration} — {len(msg.tool_calls)} call(s)")
 
         messages.append({
             "role":       "assistant",
-            "content":    clean,    # store only the non-thinking part
+            "content":    raw,
             "tool_calls": [
-                {
-                    "id": tc.id, "type": "function",
-                    "function": {"name": tc.function.name,
-                                 "arguments": tc.function.arguments},
-                }
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                 for tc in msg.tool_calls
             ],
         })
@@ -296,41 +273,46 @@ async def run(query: str, tools: list, registry: ToolRegistry) -> str:
         results = await asyncio.gather(
             *[execute_tool(tc, registry, dedup) for tc in msg.tool_calls]
         )
-
         for tid, result in results:
             messages.append({"role": "tool", "tool_call_id": tid, "content": result})
 
-    # Max iterations reached — answer without tools
+    # Fallback
     print("\n⚠️  Max iterations — forcing final answer")
-    messages.append({
-        "role": "user",
-        "content": "Based on everything above, give your final answer now. No more tool calls."
-    })
-    resp = chat(messages, tools=None)
-    _, clean = parse_response(resp.choices[0].message.content or "")
-    return clean
+    messages.append({"role": "user", "content": "Give your final answer now. No more tool calls."})
+    return (chat(messages).choices[0].message.content or "")
 
 
-# ── Pretty answer box ─────────────────────────────────────────────────────────
-def print_answer(text: str):
+# ── Unified entry ─────────────────────────────────────────────────────────────
+async def run(query: str, tools: list, registry: ToolRegistry) -> tuple[str, str]:
+    mode = classify(query)
+    if mode == QueryMode.NO_TOOLS:
+        return await run_no_tools(query), "🧠 direct"
+    return await run_with_tools(query, tools, registry), "🔧 tools"
+
+
+# ── Pretty printer ────────────────────────────────────────────────────────────
+def print_answer(text: str, label: str):
     w = 72
-    print("\n" + "═" * w)
-    print("AI")
-    print("═" * w)
+    print("\n" + "═"*w + f"\n  🤖  ARIA  [{label}]\n" + "═"*w)
     print(text)
-    print("═" * w)
+    print("═"*w)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
-
+BANNER = """\
+╔══════════════════════════════════════════════════════════════════╗
+║                    🤖  A R I A  v2.6                            ║
+║     Smart Autonomous AI  ·  {model:<36}║
+╚══════════════════════════════════════════════════════════════════╝
+  Commands: exit | quit | clear
+"""
 
 async def main():
     command = "uv" if os.getenv("USE_UV", "0") == "1" else "python"
     args    = ["run", "mcp_server.py"] if command == "uv" else ["mcp_server.py"]
 
     print(BANNER.format(model=f"model: {MODEL}"))
-    print(f"  🦙 {LLAMA_CPP_URL}   ctx={CTX_LIMIT}   "
-          f"💭 thinking={'ON' if SHOW_THINKING else 'OFF'}\n")
+    print(f"  🦙 {LLAMA_CPP_URL}   ctx={CTX_LIMIT}\n")
     print("  Connecting MCP...", end=" ", flush=True)
 
     async with AsyncExitStack() as stack:
@@ -364,10 +346,10 @@ async def main():
                 t0 = time.time()
                 print()
 
-                answer = await run(q, raw_tools, registry)
-                ms     = int((time.time() - t0) * 1000)
+                answer, label = await run(q, raw_tools, registry)
+                ms = int((time.time() - t0) * 1000)
 
-                print_answer(answer)
+                print_answer(answer, label)
                 print(f"\n  ⏱  {ms} ms\n")
 
             except KeyboardInterrupt:
