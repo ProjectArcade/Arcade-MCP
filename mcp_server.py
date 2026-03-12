@@ -4,6 +4,11 @@ from mcp.server.fastmcp.prompts import base
 import httpx
 from datetime import datetime
 import pytz
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 mcp = FastMCP("DocumentMCP", log_level="ERROR")
 
@@ -40,6 +45,7 @@ def edit_document(
     if doc_id not in docs:
         raise ValueError(f"Document with ID '{doc_id}' not found.")
     docs[doc_id] = docs[doc_id].replace(old_str, new_str)
+    return f"Document '{doc_id}' updated successfully."
 
 
 @mcp.tool(
@@ -86,6 +92,7 @@ def get_weather(
 )
 def get_current_time(
     timezone: str = Field(
+        default="UTC",
         description="Timezone name e.g. 'Asia/Kolkata', 'America/New_York', 'Europe/London', 'UTC'."
     )
 ):
@@ -101,6 +108,102 @@ def get_current_time(
         )
     except pytz.UnknownTimeZoneError:
         raise ValueError(f"Unknown timezone '{timezone}'. Use format like 'Asia/Kolkata' or 'America/New_York'.")
+
+
+@mcp.tool(
+    name="internet_search",
+    description="Search the internet using Tavily. Use this to find current information, news, or answer questions that require web search. Returns top search results with titles, content snippets, and URLs."
+)
+def internet_search(
+    query: str = Field(description="Search query to look up on the internet. Be specific and clear."),
+    count: int = Field(default=5, description="Number of results to return (1-10, default 5)"),
+    search_depth: str = Field(
+        default="basic",
+        description="Search depth: 'basic' for faster results, 'advanced' for more thorough search."
+    )
+):
+    """
+    Search the web using Tavily Search API.
+    Requires TAVILY_API_KEY in .env file.
+    Get a free API key at: https://tavily.com
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+
+    if not api_key or api_key == "Your_Tavily_API_Key_Here":
+        raise ValueError(
+            "❌ TAVILY_API_KEY not configured!\n"
+            "1. Get a free API key at: https://tavily.com\n"
+            "2. Create a .env file in the project root\n"
+            "3. Add: TAVILY_API_KEY=your_actual_key\n"
+            "4. Restart the server"
+        )
+
+    # Clamp count between 1 and 10
+    count = max(1, min(count, 10))
+
+    # Validate search_depth
+    if search_depth not in ("basic", "advanced"):
+        search_depth = "basic"
+
+    url = "https://api.tavily.com/search"
+    headers = {
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "max_results": count,
+        "search_depth": search_depth,
+        "include_answer": True,       # Tavily can return a direct AI answer
+        "include_raw_content": False,
+    }
+
+    try:
+        with httpx.Client() as client:
+            response = client.post(url, headers=headers, json=payload, timeout=20)
+
+        if response.status_code == 401:
+            raise ValueError(
+                "❌ Invalid TAVILY_API_KEY\n"
+                "Check your API key in the .env file and restart the server."
+            )
+        elif response.status_code == 429:
+            raise ValueError(
+                "⚠️ Tavily Search rate limit exceeded.\n"
+                "Check your usage at https://tavily.com"
+            )
+        elif response.status_code != 200:
+            raise ValueError(f"Tavily Search API error: HTTP {response.status_code} — {response.text}")
+
+        data = response.json()
+
+        output_lines = [f"🔍 Search Results for '{query}':\n"]
+
+        # Include the AI-generated answer if available
+        answer = data.get("answer")
+        if answer:
+            output_lines.append(f"💡 Quick Answer: {answer}\n")
+
+        results = data.get("results", [])
+        if not results:
+            return f"No results found for: '{query}'"
+
+        for i, result in enumerate(results, 1):
+            title = result.get("title", "No title")
+            content = result.get("content", "No description")
+            result_url = result.get("url", "")
+            score = result.get("score")
+
+            output_lines.append(f"{i}. **{title}**")
+            output_lines.append(f"   {content}")
+            if score is not None:
+                output_lines.append(f"   relevance: {score:.2f}")
+            output_lines.append(f"   🔗 {result_url}\n")
+
+        return "\n".join(output_lines).strip()
+
+    except httpx.RequestError as e:
+        raise ValueError(f"Network error while contacting Tavily: {str(e)}")
 
 
 @mcp.resource(
