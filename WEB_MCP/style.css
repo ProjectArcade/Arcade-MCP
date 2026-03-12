@@ -152,9 +152,11 @@ nav{
   padding:0px 5px; font-size:.58rem; font-weight:700; letter-spacing:.05em;
 }
 
-/* ── Thinking block — light theme ── */
+/* ── Thinking block ── */
 .think-wrap{
-  max-width:480px; border-radius:12px; overflow:hidden;
+  /* ← widened from 480px so all steps are fully visible */
+  max-width:680px;
+  border-radius:12px; overflow:hidden;
   background:var(--surface); border:1px solid var(--border);
   box-shadow:var(--shadow); animation:up .2s ease;
 }
@@ -206,7 +208,7 @@ nav{
   color:var(--dim); font-size:.62rem;
   padding:1px 6px; border-radius:4px;
   font-family:'Geist Mono',monospace;
-  max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 .tk-dots{ display:flex; gap:3px; align-items:center; margin-left:auto; padding-right:4px; }
 .tk-dots span{
@@ -222,6 +224,28 @@ nav{
 .tk-check svg{ width:16px; height:16px; }
 .tk-check svg path{ stroke:var(--green-mid); }
 
+/* ── Skill badge — shown below answer when a skill was used ── */
+.skill-badge{
+  display:flex; align-items:center; gap:7px;
+  background:var(--green-dim);
+  border:1px solid #b3ffb3;
+  border-radius:100px;
+  padding:5px 13px 5px 10px;
+  font-size:.72rem; font-weight:500;
+  color:var(--green-mid);
+  margin-top:6px;
+  max-width:fit-content;
+  align-self:flex-start;
+  animation:up .3s ease;
+  box-shadow:0 1px 4px rgba(0,120,0,.08);
+}
+.skill-badge svg{
+  flex-shrink:0; width:13px; height:13px;
+}
+.skill-badge strong{
+  font-weight:700;
+  font-family:'Geist Mono', monospace;
+}
 
 /* ── Markdown bubble styles ── */
 .bubble.md { white-space: normal; }
@@ -241,7 +265,7 @@ nav{
   color:var(--text);
 }
 
-/* key-value rows (weather / tool output) */
+/* key-value rows */
 .kv-row{
   display:flex; gap:8px; align-items:baseline;
   padding:1px 0; font-size:.85rem;
@@ -280,13 +304,11 @@ nav{
 .code-block pre::-webkit-scrollbar{ height:3px; }
 .code-block pre::-webkit-scrollbar-thumb{ background:var(--border); border-radius:2px; }
 
-
 /* ══════════════════════════════════════════════════════
-   SLASH COMMAND MENU — Claude-style popup
+   SLASH COMMAND MENU
    ══════════════════════════════════════════════════════ */
 .slash-menu{
   position:absolute;
-  /* anchor to bottom of iinner, above ibox */
   bottom:calc(100% + 8px);
   left:0; right:0;
   max-width:680px; margin:0 auto;
@@ -305,11 +327,7 @@ nav{
   from{ opacity:0; transform:translateY(10px) scale(.97); }
   to  { opacity:1; transform:translateY(0)    scale(1);   }
 }
-
-/* ibar must be relative for anchoring */
 #ibar{ position:relative; }
-
-/* Header */
 .slash-title{
   display:flex; align-items:center; gap:8px;
   padding:11px 16px 8px;
@@ -322,8 +340,6 @@ nav{
   width:6px; height:6px; border-radius:50%;
   background:var(--green); box-shadow:0 0 5px var(--green);
 }
-
-/* Items container */
 .slash-list{
   display:flex; flex-direction:column;
   padding:6px;
@@ -331,8 +347,6 @@ nav{
 }
 .slash-list::-webkit-scrollbar{ width:3px; }
 .slash-list::-webkit-scrollbar-thumb{ background:var(--border); border-radius:2px; }
-
-/* Individual item */
 .slash-item{
   display:flex; align-items:center; gap:12px;
   padding:8px 10px; border-radius:10px; cursor:pointer;
@@ -349,8 +363,6 @@ nav{
 }
 .slash-item.active .slash-name{ color:var(--green-mid); }
 .slash-item.active .slash-arrow{ opacity:1; color:var(--green-mid); }
-
-/* Tool icon wrapper — colored ring */
 .slash-icon{
   width:36px; height:36px; border-radius:10px;
   background:var(--bg); border:1px solid var(--border);
@@ -363,8 +375,6 @@ nav{
   border-color:color-mix(in srgb, var(--tool-color, var(--green-mid)) 30%, transparent);
 }
 .slash-icon svg{ width:18px; height:18px; }
-
-/* Text */
 .slash-info{
   display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;
 }
@@ -376,8 +386,6 @@ nav{
   font-family:'Geist Mono',monospace;
 }
 .slash-desc{ font-size:.73rem; color:var(--dim); }
-
-/* Badge */
 .slash-badge{
   font-size:.58rem; font-weight:700;
   padding:2px 7px; border-radius:100px;
@@ -391,14 +399,10 @@ nav{
   color:var(--green-mid);
   border-color:#b3ffb3;
 }
-
-/* Arrow */
 .slash-arrow{
   color:var(--dim2); opacity:0; flex-shrink:0;
   transition:opacity .1s, color .1s;
 }
-
-/* Keyboard hint row */
 .slash-hint{
   display:flex; align-items:center; justify-content:center; gap:4px;
   padding:8px 10px 6px;
@@ -414,7 +418,7 @@ nav{
   color:var(--dim); box-shadow:0 1px 0 var(--border);
 }
 
-/* ── Input tool pill (above textarea when tool is selected) ── */
+/* ── Input tool pill ── */
 .input-tool-pill{
   display:flex; align-items:center; gap:7px;
   background:color-mix(in srgb, var(--green-mid) 6%, var(--surface));
@@ -444,7 +448,6 @@ nav{
 }
 .itp-dismiss:hover{ color:var(--text); background:var(--border); }
 
-/* kbd style */
 kbd{
   display:inline-flex; align-items:center; justify-content:center;
   background:var(--bg); border:1px solid var(--border);
@@ -545,7 +548,7 @@ kbd{
 ::-webkit-scrollbar{ width:4px; }
 ::-webkit-scrollbar-thumb{ background:var(--border); border-radius:2px; }
 
-/* ── Tool pill (shown in ibox when slash command selected) ── */
+/* ── Tool pill in ibox ── */
 #tool-pill-wrap{
   display:flex; align-items:center; flex-shrink:0;
 }
@@ -581,7 +584,6 @@ kbd{
 }
 .tool-pill-x:hover{ opacity:1; background:rgba(0,255,0,.15); }
 
-/* When pill is visible, shrink placeholder text */
 #tool-pill-wrap:not([style*="none"]) ~ #q::placeholder{
   font-size:.8rem;
 }

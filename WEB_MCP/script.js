@@ -3,10 +3,9 @@ const SERVER = (new URLSearchParams(location.search).get("server"))
   || (typeof window.MCP_SERVER_URL !== "undefined" ? window.MCP_SERVER_URL : null)
   || `${location.protocol}//${location.hostname}:8000`;
 
-// ── Conversation history (sent with every request for context) ────────────────
-// Each entry: { role: "user"|"assistant", content: string }
+// ── Conversation history ──────────────────────────────────────────────────────
 const chatHistory = [];
-const MAX_HISTORY = 20; // keep last 20 turns (10 pairs)
+const MAX_HISTORY = 20;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const ci     = document.getElementById("ci");
@@ -129,6 +128,9 @@ const TOOL_LABELS = {
   internet_search: "Searching the web",
 };
 
+// ── Skill badge SVG icon ──────────────────────────────────────────────────────
+const SKILL_ICO = `<svg viewBox="0 0 20 20" fill="none" width="13" height="13"><rect x="3" y="3" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M6 7h8M6 10h6M6 13h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  Turn
 // ══════════════════════════════════════════════════════════════════════════════
@@ -136,7 +138,9 @@ class Turn {
   constructor() {
     this.id=uid(); this.stepsEl=null; this.bubbleEl=null; this.tsEl=null;
     this.collapsed=false; this.toolsUsed=[]; this.hasThink=false; this.isDirect=false;
+    this._msgWrap=null;
   }
+
   initThink() {
     if (this.hasThink) return; this.hasThink=true;
     const sid=this.id+"_s",hid=this.id+"_h",tid=this.id+"_t",iid=this.id+"_i";
@@ -144,6 +148,7 @@ class Turn {
     wrap.innerHTML=`<div class="msg-row"><div class="bot-av">⚙</div><div class="think-wrap"><div class="tk-hdr" id="${hid}" onclick="turns['${this.id}'].toggle()"><div class="tk-star" id="${iid}">${SPIN_SVG}</div><span class="tk-title" id="${tid}">Working…</span><span class="tk-chev">▼</span></div><div class="tk-steps" id="${sid}"></div></div></div>`;
     ci.appendChild(wrap); this.stepsEl=document.getElementById(sid); sc();
   }
+
   toggle() {
     this.collapsed=!this.collapsed;
     const steps=document.getElementById(this.id+"_s"),hdr=document.getElementById(this.id+"_h");
@@ -152,7 +157,9 @@ class Turn {
     const chev=hdr&&hdr.querySelector(".tk-chev");
     if(chev)chev.textContent=this.collapsed?"▶":"▼";
   }
+
   setTitle(t){const el=document.getElementById(this.id+"_t");if(el)el.textContent=t;}
+
   addStep(toolName,label,tag){
     if(!this.stepsEl)return;
     const icon=TOOL_ICO[toolName]||TOOL_ICO._default;
@@ -160,34 +167,62 @@ class Turn {
     el.innerHTML=`<div class="tk-ico">${icon}</div><div class="tk-info"><span class="tk-lbl">${esc(label)}</span>${tag?`<span class="tk-tag">${esc(tag)}</span>`:""}</div>`;
     this.stepsEl.appendChild(el); sc();
   }
+
   addSearching(query){
     if(!this.stepsEl)return;
     const el=document.createElement("div"); el.className="tk-step";
     el.innerHTML=`<div class="tk-ico">${TOOL_ICO.internet_search}</div><div class="tk-info" style="flex:1"><span class="tk-lbl">Searching the web</span><span class="tk-tag">${esc(String(query).slice(0,55))}</span></div><div class="tk-dots"><span></span><span></span><span></span></div>`;
     this.stepsEl.appendChild(el); sc();
   }
+
   addDone(){
     if(!this.stepsEl)return;
     const el=document.createElement("div"); el.className="tk-step";
     el.innerHTML=`<div class="tk-ico tk-check">${DONE_SVG}</div><div class="tk-info"><span class="tk-lbl" style="color:var(--green-mid)">Got response</span></div>`;
     this.stepsEl.appendChild(el); sc();
   }
+
   finish(){
     const ico=document.getElementById(this.id+"_i"),ttl=document.getElementById(this.id+"_t");
     if(ico){ico.innerHTML=DONE_SVG;ico.classList.add("done");}
     if(ttl)ttl.textContent=this.toolsUsed.length?"Used: "+this.toolsUsed.join(", "):"Done";
     setTimeout(()=>{if(!this.collapsed)this.toggle();},700);
   }
+
   initBubble(){
     if(this.bubbleEl)return;
     const bid=this.id+"_b",tsid=this.id+"_ts";
     const wrap=document.createElement("div"); wrap.className="msg bot";
     wrap.innerHTML=`<div class="msg-row"><div class="bot-av">⚙</div><div class="bubble md" id="${bid}"><span class="cur"></span></div></div><div class="msg-ts" id="${tsid}"></div>`;
-    ci.appendChild(wrap); this.bubbleEl=document.getElementById(bid); this.tsEl=document.getElementById(tsid); sc();
+    ci.appendChild(wrap);
+    this._msgWrap = wrap;
+    this.bubbleEl=document.getElementById(bid);
+    this.tsEl=document.getElementById(tsid);
+    sc();
   }
+
   stream(text){if(this.bubbleEl)this.bubbleEl.innerHTML=md(text)+'<span class="cur"></span>';sc();}
   finalize(text){if(this.bubbleEl)this.bubbleEl.innerHTML=md(text);if(this.tsEl)this.tsEl.textContent=tstr();sc();}
+
+  // ── NEW: show skill badge below the answer bubble ─────────────────────────
+  showSkillBadge(name) {
+    if (!this._msgWrap) return;
+    const badge = document.createElement("div");
+    badge.className = "skill-badge";
+    badge.innerHTML =
+      SKILL_ICO +
+      `<span>Used skill: <strong>${esc(name)}</strong></span>`;
+    // Insert after the .msg-row (before the timestamp)
+    const msgRow = this._msgWrap.querySelector(".msg-row");
+    if (msgRow && msgRow.nextSibling) {
+      this._msgWrap.insertBefore(badge, msgRow.nextSibling);
+    } else {
+      this._msgWrap.appendChild(badge);
+    }
+    sc();
+  }
 }
+
 const turns={};
 
 function addUser(text){
@@ -212,7 +247,6 @@ const SLASH_TOOLS = [
     cmd:"search", name:"/search", desc:"Search the web for anything",
     icon:`<svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="var(--green-mid)" stroke-width="1.5"/><path d="M10 3c-2 2-2 12 0 14M10 3c2 2 2 12 0 14M3 10h14" stroke="var(--green-mid)" stroke-width="1.5" stroke-linecap="round"/></svg>`,
     badge:"internet_search", placeholder:"Search the web for…",
-    // Explicit instruction so LLM can't pick wrong tool
     template: q => `Search the web for: ${q}`,
     toolHint: "internet_search",
   },
@@ -276,7 +310,6 @@ function highlightSlash(idx){
 const pillWrap = document.getElementById("tool-pill-wrap");
 
 function showToolPill(tool){
-  // Render a coloured pill with the tool icon + name + ✕ dismiss
   const icon = tool.icon.replace(/stroke="var\(--green-mid\)"/g, 'stroke="currentColor"');
   pillWrap.innerHTML =
     `<div class="tool-pill">` +
@@ -294,7 +327,6 @@ function clearToolPill(){
 
 function selectSlashTool(tool){
   slashTool=tool; slashActive=false; slashMenu.style.display="none";
-  // Clear the "/cmd" text — user only types the argument now
   qEl.value="";
   qEl.placeholder=tool.placeholder;
   showToolPill(tool);
@@ -314,7 +346,6 @@ qEl.addEventListener("input",()=>{
   qEl.style.height="24px";
   qEl.style.height=Math.min(qEl.scrollHeight,130)+"px";
   const val=qEl.value;
-  // If pill is active, textarea = argument only — never show slash menu
   if(slashTool) return;
   if(!val){resetSlash();return;}
   if(val.startsWith("/")){slashIdx=0;renderSlashMenu(val.slice(1));return;}
@@ -344,20 +375,15 @@ async function send(){
   let raw=qEl.value.trim();
   if(!raw)return;
 
-  let query=raw, forceTools=false, toolHint=null;
-
-  let toolArg = null;   // raw user arg, sent separately so backend skips parsing
+  let query=raw, forceTools=false, toolHint=null, toolArg=null;
 
   if(slashTool){
     const arg = raw.trim();
-
-    // Guard: require argument for all except /time
     if(!arg && slashTool.cmd !== "time"){
       qEl.placeholder="⚠ Please enter a value first…";
       setTimeout(()=>{qEl.placeholder=slashTool.placeholder;},2000);
       return;
     }
-
     toolArg    = arg || null;
     query      = slashTool.template(arg);
     forceTools = true;
@@ -365,7 +391,6 @@ async function send(){
     dlog("info",`[slash] /${slashTool.cmd} arg="${toolArg}" → tool_hint=${toolHint}`);
   }
 
-  // Capture displayText BEFORE resetSlash clears slashTool
   const displayText = slashTool ? `/${slashTool.cmd} ${raw}`.trim() : raw;
 
   qEl.value=""; qEl.style.height="24px";
@@ -373,7 +398,6 @@ async function send(){
   addUser(displayText);
   dlog("info","→ "+query);
 
-  // Add to history BEFORE the request
   chatHistory.push({role:"user", content:query});
   if(chatHistory.length > MAX_HISTORY) chatHistory.splice(0, chatHistory.length - MAX_HISTORY);
 
@@ -387,8 +411,8 @@ async function send(){
         query,
         force_tools: forceTools,
         tool_hint:   toolHint,
-        tool_arg:    toolArg,           // raw arg so backend skips parsing
-        history:     chatHistory.slice(0,-1), // send history EXCLUDING current msg
+        tool_arg:    toolArg,
+        history:     chatHistory.slice(0,-1),
       }),
     });
     if(!resp.ok)throw new Error("HTTP "+resp.status);
@@ -419,7 +443,11 @@ async function send(){
                 turn.setTitle("Thinking…");turn.isDirect=true;
               }
             }
+            if(evt.text.startsWith("checking my skill")){
+              turn.setTitle("📖 "+evt.text.replace("checking my skill — ","")+"…");
+            }
             break;
+
           case"tool_call":
             if(!turn.hasThink)turn.initThink();
             turn.toolsUsed.push(evt.name);
@@ -434,15 +462,15 @@ async function send(){
               turn.setTitle("Using "+evt.name+"…");
             }
             break;
+
           case"tool_result":
             dlog("result","← "+evt.name+": "+evt.result);
             if(turn.hasThink)turn.addDone();
             break;
+
           case"token":
-            // Live token streaming — show words as they arrive from the LLM
             tokenBuf += evt.text;
             if(!turn.bubbleEl){
-              // Collapse thinking panel immediately on first token
               if(turn.hasThink) turn.finish();
               turn.initBubble();
             }
@@ -453,14 +481,20 @@ async function send(){
             answer=evt.text;
             dlog("answer",answer.length+" chars");
             if(tokenBuf){
-              // Already streamed live — just finalize (no re-stream needed)
               turn.finalize(answer);
             } else {
-              // Fallback: no tokens received, do word-by-word stream
               if(turn.hasThink){turn.finish();await wait(750);}
               await streamWords(turn,answer);
             }
             break;
+
+          // ── NEW: skill badge ──────────────────────────────────────────────
+          case"skill_used":
+            turn.showSkillBadge(evt.skill);
+            dlog("info", "📖 Skill used: " + evt.skill);
+            break;
+          // ─────────────────────────────────────────────────────────────────
+
           case"error":
             dlog("error",evt.text);
             if(turn.hasThink)turn.finish();
@@ -474,7 +508,6 @@ async function send(){
       if(turn.hasThink)turn.finish();
       turn.initBubble();turn.finalize("(no response)");
     }else{
-      // Save assistant reply to history
       chatHistory.push({role:"assistant", content:answer});
       if(chatHistory.length > MAX_HISTORY) chatHistory.splice(0, chatHistory.length - MAX_HISTORY);
     }
@@ -485,7 +518,6 @@ async function send(){
     dlog("error",e.message);
     document.getElementById("abadge").className="badge off";
     document.getElementById("abadge").textContent="OFFLINE";
-    // Pop the user message we added, since it failed
     chatHistory.pop();
   }finally{
     setTimeout(()=>{delete turns[turn.id];},30000);

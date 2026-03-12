@@ -20,6 +20,8 @@ from mcp_client import MCPClient
 from core.tools import ToolManager
 from mcp.types import TextContent
 
+from skill_manager import match_skill
+
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -38,10 +40,6 @@ USE_UV           = os.getenv("USE_UV",          "0") == "1"
 ALLOWED_ORIGINS  = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 # ── Query Classifier ──────────────────────────────────────────────────────────
-#
-# classify(query) → ("none"|"weather"|"time"|"search", tool_name|None)
-# Avoids LLM call #1 by picking the right tool directly from regex signals.
-
 _WEATHER_PAT = re.compile(
     r"\b(weather|forecast|temperature|rain|snow|wind|humidity|"
     r"feels like|hot|cold|sunny|cloudy|storm|drizzle|heatwave)\b",
@@ -90,29 +88,22 @@ _EXPLAIN_PAT = re.compile(
     r"where (is |was )|which (is |are ))",
     re.IGNORECASE,
 )
-# Single capitalised word that looks like a proper noun (e.g. Epstein, Bitcoin, Sensex)
 _PROPER_NOUN_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 
 def classify(query: str) -> tuple:
     q = query.strip()
     if _GREET_PAT.match(q) or len(q) <= 8:
         return ("none", None)
-    # Pure timeless explanations with no live-data signals → knowledge
     if _EXPLAIN_PAT.match(q) and not _SEARCH_PAT.search(q) and not _WEATHER_PAT.search(q):
         return ("none", None)
-    # Weather check (more specific, before generic search)
     if _WEATHER_PAT.search(q):
         return ("weather", "get_weather")
-    # Time check
     if _TIME_PAT.search(q):
         return ("time", "get_current_time")
-    # Explicit live-data signals
     if _SEARCH_PAT.search(q):
         return ("search", "internet_search")
-    # Single proper noun like "Epstein", "Bitcoin", "Sensex" → search
     if _PROPER_NOUN_RE.search(q):
         return ("search", "internet_search")
-    # Long open-ended query the model can't answer from training
     if len(q) > 40:
         return ("search", "internet_search")
     return ("none", None)
@@ -122,13 +113,12 @@ def needs_tools(query: str) -> bool:
     return kind != "none"
 
 def auto_tool_hint(query: str) -> Optional[str]:
-    """Return tool name when classifier is confident, skip LLM routing call."""
     _, tool = classify(query)
     return tool
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
 _TIME_RE    = re.compile(r"\b(current|now|today|tonight|live|latest|recent|right\s+now|this\s+(week|month|year)|at the moment|as of|ongoing|present(ly)?|what time|what('s| is) the time|time (is|it is)|date (is|today))\b", re.IGNORECASE)
-_WEATHER_RE = _WEATHER_PAT   # reuse same pattern
+_WEATHER_RE = _WEATHER_PAT
 
 def needs_time_ctx(q: str) -> bool:
     return bool(_TIME_RE.search(q)) or bool(_WEATHER_RE.search(q))
@@ -149,7 +139,7 @@ _SYSTEM_CHAT = (
     "Answer clearly. Use markdown when it adds value. Never make up facts."
 )
 
-def system_tools(injected: str = "", tool_hint: Optional[str] = None) -> str:
+def system_tools(injected: str = "", tool_hint: Optional[str] = None, skill_ctx: str = "") -> str:
     hint_line = ""
     if tool_hint:
         hint_line = (
@@ -157,13 +147,23 @@ def system_tools(injected: str = "", tool_hint: Optional[str] = None) -> str:
             f"You MUST call '{tool_hint}' as your first tool call. "
             f"Do NOT call any other tool before '{tool_hint}'.\n"
         )
+    skill_line = f"\n\n---\n{skill_ctx}\n---\n" if skill_ctx else ""
     return (
         f"You are Aria, a concise professional AI assistant. Developed by Abhinav Thakur you are a part of Project Arcade.\n"
-        f"{injected}{hint_line}\n"
+        f"{injected}{hint_line}{skill_line}\n"
         "Use tools ONLY for live/current data (weather, news, prices, time, web search). "
         "Never call a tool for general knowledge. "
         "Never repeat a tool call with identical arguments. "
         "Answer concisely using markdown when helpful."
+    )
+
+def system_skill(skill_ctx: str = "") -> str:
+    skill_line = f"\n\n---\n{skill_ctx}\n---\n" if skill_ctx else ""
+    return (
+        "You are Aria, a concise professional AI assistant. Developed by Abhinav Thakur you are a part of Project Arcade.\n"
+        f"{skill_line}\n"
+        "Follow the skill instructions above carefully. "
+        "Answer clearly using markdown when helpful. Never make up facts."
     )
 
 def estimate_chars(msgs):
@@ -175,7 +175,6 @@ def estimate_chars(msgs):
 def trim_messages(messages):
     if estimate_chars(messages) <= MAX_PROMPT_CHARS:
         return messages
-    # Always keep system prompt (index 0)
     head, tail = messages[:1], messages[1:]
     while tail and estimate_chars(head + tail) > MAX_PROMPT_CHARS:
         dropped = False
@@ -186,7 +185,6 @@ def trim_messages(messages):
                     j += 1
                 tail = tail[j:]; dropped = True; break
         if not dropped:
-            # Drop oldest non-system message
             tail = tail[1:]
             break
     return head + tail
@@ -255,11 +253,12 @@ app.add_middleware(
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
-def sse_debug(text: str)  -> str: return sse({"type": "debug",       "text": text})
-def sse_tool(name, args)  -> str: return sse({"type": "tool_call",   "name": name, "args": args})
-def sse_result(name, res) -> str: return sse({"type": "tool_result", "name": name, "result": res[:120]})
-def sse_answer(text: str) -> str: return sse({"type": "answer",      "text": text})
-def sse_error(text: str)  -> str: return sse({"type": "error",       "text": text})
+def sse_debug(text: str)       -> str: return sse({"type": "debug",       "text": text})
+def sse_tool(name, args)       -> str: return sse({"type": "tool_call",   "name": name, "args": args})
+def sse_result(name, res)      -> str: return sse({"type": "tool_result", "name": name, "result": res[:120]})
+def sse_answer(text: str)      -> str: return sse({"type": "answer",      "text": text})
+def sse_error(text: str)       -> str: return sse({"type": "error",       "text": text})
+def sse_skill(skill_name: str) -> str: return sse({"type": "skill_used",  "skill": skill_name})
 
 # ── Execute tool ──────────────────────────────────────────────────────────────
 async def execute_tool_sse(tc, registry: ToolRegistry, dedup: CallDedup):
@@ -292,14 +291,14 @@ async def execute_tool_sse(tc, registry: ToolRegistry, dedup: CallDedup):
 
 # ── Request models ────────────────────────────────────────────────────────────
 class HistoryMessage(BaseModel):
-    role:    str   # "user" | "assistant"
+    role:    str
     content: str
 
 class ChatRequest(BaseModel):
     query:       str
     force_tools: bool                  = False
-    tool_hint:   Optional[str]         = None   # e.g. "internet_search"
-    tool_arg:    Optional[str]         = None   # raw user arg (e.g. "epstein file")
+    tool_hint:   Optional[str]         = None
+    tool_arg:    Optional[str]         = None
     history:     List[HistoryMessage]  = []
 
 # ── Agent stream ──────────────────────────────────────────────────────────────
@@ -315,28 +314,54 @@ async def agent_stream(
 
     use_tools = force_tools or needs_tools(query)
 
-    # If no tool_hint given, try to auto-detect from the query classifier.
-    # This lets us skip LLM call #1 for obvious queries like "latest X", "weather in Y".
+    # ── Skill check ───────────────────────────────────────────────────────────
+    skill_name, skill_ctx = match_skill(query)
+    if skill_name:
+        yield sse_debug(f"checking my skill — {skill_name}")
+        if not force_tools:
+            use_tools = False
+            tool_hint = None
+
+    # ── Auto tool hint ────────────────────────────────────────────────────────
     if not tool_hint and not tool_arg and use_tools:
         tool_hint = auto_tool_hint(query)
-        # For auto-detected search, use the original query as the search term
         if tool_hint == "internet_search":
             tool_arg = query
         elif tool_hint == "get_weather":
-            # Extract location: last noun-phrase after "in/at/for"
             m = re.search(r"\b(?:in|at|for)\s+([\w\s,]+?)\??$", query, re.IGNORECASE)
             tool_arg = m.group(1).strip() if m else query
         elif tool_hint == "get_current_time":
             m = re.search(r"\b(?:in|at)\s+([\w\s/]+?)\??$", query, re.IGNORECASE)
             tool_arg = m.group(1).strip() if m else "UTC"
 
-    # Build history prefix — keep last 20 messages (10 pairs)
     hist_msgs = [
         {"role": m.role, "content": m.content}
         for m in history[-20:]
     ]
 
-    # ── Direct answer (no tools) — streamed token by token ──────────────────
+    # ── Skill path ────────────────────────────────────────────────────────────
+    if skill_name and not force_tools:
+        yield sse_debug("skill — answering from knowledge")
+        messages = (
+            [{"role": "system", "content": system_skill(skill_ctx)}]
+            + hist_msgs
+            + [{"role": "user", "content": query}]
+        )
+        stream = await asyncio.to_thread(llm_chat, messages, None, True)
+        answer = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                answer += delta
+                yield sse({"type": "token", "text": delta})
+        yield sse_answer(answer)
+        # ── Notify frontend which skill was used ──────────────────────────────
+        yield sse_skill(skill_name)
+        # ─────────────────────────────────────────────────────────────────────
+        yield "data: [DONE]\n\n"
+        return
+
+    # ── Direct answer ─────────────────────────────────────────────────────────
     if not use_tools:
         yield sse_debug("conversation — answering directly")
         messages = (
@@ -358,27 +383,23 @@ async def agent_stream(
     # ── Tool path ─────────────────────────────────────────────────────────────
     injected = time_context() if needs_time_ctx(query) else ""
     messages = (
-        [{"role": "system", "content": system_tools(injected, tool_hint)}]
+        [{"role": "system", "content": system_tools(injected, tool_hint, skill_ctx)}]
         + hist_msgs
         + [{"role": "user", "content": query}]
     )
     dedup = CallDedup()
 
-    # Helper classes for synthetic tool calls
     class _Fn:
         def __init__(self, name, arguments): self.name = name; self.arguments = arguments
     class _TC:
         def __init__(self, tc_id, fn): self.id = tc_id; self.function = fn
 
-    # ── FAST PATH: tool_hint set → skip LLM call #1, fire tool immediately ──
+    # ── Fast path ─────────────────────────────────────────────────────────────
     if tool_hint and registry.client_for(tool_hint):
         yield sse_debug(f"fast-path — skipping LLM call, firing {tool_hint} directly")
 
-        # Use raw tool_arg if provided (frontend sends this for slash commands).
-        # Fall back to full query only if tool_arg is missing.
         arg = tool_arg or query
 
-        # Map tool name → its expected argument schema
         if tool_hint == "internet_search":
             tool_args = {"query": arg}
         elif tool_hint == "get_weather":
@@ -391,17 +412,15 @@ async def agent_stream(
             tool_args = {"document_id": arg, "content": ""}
         else:
             tool_args = {"query": arg}
-        tool_id     = f"fast_{tool_hint}_0"
 
+        tool_id = f"fast_{tool_hint}_0"
         tc = _TC(tool_id, _Fn(tool_hint, json.dumps(tool_args)))
 
-        # Emit tool_call SSE immediately (no wait)
         tid, result, events = await execute_tool_sse(tc, registry, dedup)
         for line in events.split("\n\n"):
             if line.strip():
                 yield line + "\n\n"
 
-        # Build messages with the tool result for the summarization LLM call
         messages.append({
             "role": "assistant", "content": "",
             "tool_calls": [{
@@ -411,9 +430,7 @@ async def agent_stream(
         })
         messages.append({"role": "tool", "tool_call_id": tid, "content": result})
 
-        # ── LLM call: summarize the tool result (streamed, capped shorter) ─────
         yield sse_debug("summarizing result")
-        # Inject a tight instruction so the model answers concisely and fast
         messages[0]["content"] += (
             "\nBe concise. Answer in 3-5 sentences max. No filler phrases."
         )
@@ -428,7 +445,7 @@ async def agent_stream(
         yield "data: [DONE]\n\n"
         return
 
-    # ── NORMAL PATH: let LLM decide which tool(s) to call ────────────────────
+    # ── Normal path ───────────────────────────────────────────────────────────
     for iteration in range(1, MAX_ITERATIONS + 1):
         yield sse_debug(f"LLM call #{iteration}")
 
@@ -453,10 +470,8 @@ async def agent_stream(
                     if tc_delta.id:
                         tool_calls_acc[idx]["id"] = tc_delta.id
                     if tc_delta.function:
-                        # name arrives only in the FIRST chunk — set, never append
                         if tc_delta.function.name and not tool_calls_acc[idx]["name"]:
                             tool_calls_acc[idx]["name"] = tc_delta.function.name
-                        # arguments stream across many chunks — always append
                         if tc_delta.function.arguments:
                             tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
 
