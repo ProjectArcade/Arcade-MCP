@@ -1,0 +1,18 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.51.0",
+    "fastapi>=0.135.1",
+    "groq>=1.1.0",
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.8.0",
+    "openai>=2.26.0",
+    "prompt-toolkit>=3.0.51",
+    "python-dotenv>=1.1.0",
+    "pytz>=2026.1.post1",
+    "tavily-python>=0.7.23",
+]
