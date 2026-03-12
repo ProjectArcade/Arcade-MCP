@@ -38,7 +38,8 @@
             <span class="w-label">Aria · MCP Agent</span>
           </div>
           <div class="w-body">
-            Ask me anything — I can search the web, check weather, get the time, and read or edit documents.
+            Ask me anything — I can search the web, check weather, get the time, and read or edit documents.<br>
+            <span style="color:var(--dim);font-size:.8rem">Type <kbd>/</kbd> to use a tool directly.</span>
           </div>
           <div class="chips">
             <button class="chip" onclick="fill('What is the weather in Mumbai?')">🌤 Weather in Mumbai</button>
@@ -50,7 +51,14 @@
       </div>
     </div>
 
+    <!-- ↓ ibar contains the slash menu so it anchors correctly -->
     <div id="ibar">
+      <!-- Slash command menu — lives INSIDE #ibar for correct CSS anchoring -->
+      <div id="slash-menu" class="slash-menu" style="display:none">
+        <div class="slash-title">Tools</div>
+        <div class="slash-list" id="slash-list"></div>
+      </div>
+
       <div class="iinner">
         <div class="itabs">
           <button class="itab active" id="tc">
@@ -64,8 +72,10 @@
             </svg>Events
           </button>
         </div>
-        <div class="ibox">
-          <textarea id="q" placeholder="Ask anything…" rows="1"></textarea>
+        <div class="ibox" id="ibox-inner">
+          <!-- Tool pill injected here by JS when a slash command is active -->
+          <div id="tool-pill-wrap" style="display:none"></div>
+          <textarea id="q" placeholder="Ask anything… or type / for tools" rows="1"></textarea>
           <span class="ihint">Enter ↵</span>
           <button id="sbtn" onclick="send()">
             <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">

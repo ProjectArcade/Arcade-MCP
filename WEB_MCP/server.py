@@ -2,11 +2,11 @@ import asyncio
 import json
 import os
 import re
-import time
 import hashlib
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
+from typing import List, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -91,26 +91,38 @@ def time_context() -> str:
 llm = OpenAI(base_url=LLAMA_CPP_URL, api_key="not-needed")
 
 _SYSTEM_CHAT = (
-    "You are Aria, a concise professional AI assistant. "
+    "You are Aria, a concise professional AI assistant. Developed by Abhinav Thakur you are a part of Project Arcade. "
     "Answer clearly. Use markdown when it adds value. Never make up facts."
 )
 
-def system_tools(injected: str = "") -> str:
+def system_tools(injected: str = "", tool_hint: Optional[str] = None) -> str:
+    hint_line = ""
+    if tool_hint:
+        hint_line = (
+            f"\nIMPORTANT: The user explicitly invoked the '{tool_hint}' tool via a slash command. "
+            f"You MUST call '{tool_hint}' as your first tool call. "
+            f"Do NOT call any other tool before '{tool_hint}'.\n"
+        )
     return (
-        f"You are Aria, a concise professional AI assistant.\n{injected}\n"
-        "Use tools ONLY for live/current data (weather, news, prices, time). "
+        f"You are Aria, a concise professional AI assistant. Developed by Abhinav Thakur you are a part of Project Arcade.\n"
+        f"{injected}{hint_line}\n"
+        "Use tools ONLY for live/current data (weather, news, prices, time, web search). "
         "Never call a tool for general knowledge. "
         "Never repeat a tool call with identical arguments. "
         "Answer concisely using markdown when helpful."
     )
 
 def estimate_chars(msgs):
-    return sum(len(json.dumps(m.get("content") or "")) + len(json.dumps(m.get("tool_calls") or "")) for m in msgs)
+    return sum(
+        len(json.dumps(m.get("content") or "")) + len(json.dumps(m.get("tool_calls") or ""))
+        for m in msgs
+    )
 
 def trim_messages(messages):
     if estimate_chars(messages) <= MAX_PROMPT_CHARS:
         return messages
-    head, tail = messages[:2], messages[2:]
+    # Always keep system prompt (index 0)
+    head, tail = messages[:1], messages[1:]
     while tail and estimate_chars(head + tail) > MAX_PROMPT_CHARS:
         dropped = False
         for i, m in enumerate(tail):
@@ -119,12 +131,20 @@ def trim_messages(messages):
                 while j < len(tail) and tail[j].get("role") == "tool":
                     j += 1
                 tail = tail[j:]; dropped = True; break
-        if not dropped: break
+        if not dropped:
+            # Drop oldest non-system message
+            tail = tail[1:]
+            break
     return head + tail
 
-def llm_chat(messages, tools=None):
-    params = {"model": MODEL, "messages": trim_messages(messages),
-              "temperature": 0.2, "max_tokens": MAX_TOKENS}
+def llm_chat(messages, tools=None, stream=False):
+    params = {
+        "model": MODEL,
+        "messages": trim_messages(messages),
+        "temperature": 0.2,
+        "max_tokens": MAX_TOKENS,
+        "stream": stream,
+    }
     if tools:
         params["tools"] = tools
         params["tool_choice"] = "auto"
@@ -142,7 +162,7 @@ class ToolRegistry:
 
 class CallDedup:
     def __init__(self): self._seen = set()
-    def _key(self, n, a): return f"{n}::{hashlib.md5(json.dumps(a,sort_keys=True).encode()).hexdigest()}"
+    def _key(self, n, a): return f"{n}::{hashlib.md5(json.dumps(a, sort_keys=True).encode()).hexdigest()}"
     def seen(self, n, a): return self._key(n, a) in self._seen
     def mark(self, n, a): self._seen.add(self._key(n, a))
 
@@ -170,8 +190,12 @@ async def lifespan(app: FastAPI):
     await stack.__aexit__(None, None, None)
 
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
-                   allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── SSE helpers ───────────────────────────────────────────────────────────────
 def sse(obj: dict) -> str:
@@ -183,7 +207,7 @@ def sse_result(name, res) -> str: return sse({"type": "tool_result", "name": nam
 def sse_answer(text: str) -> str: return sse({"type": "answer",      "text": text})
 def sse_error(text: str)  -> str: return sse({"type": "error",       "text": text})
 
-# ── Execute tool (yields SSE lines) ──────────────────────────────────────────
+# ── Execute tool ──────────────────────────────────────────────────────────────
 async def execute_tool_sse(tc, registry: ToolRegistry, dedup: CallDedup):
     tool_name = tc.function.name
     tool_id   = tc.id
@@ -207,63 +231,139 @@ async def execute_tool_sse(tc, registry: ToolRegistry, dedup: CallDedup):
         texts  = [i.text for i in output.content if isinstance(i, TextContent)]
         full   = json.dumps(texts)
         stored = full[:TOOL_RESULT_CAP] + ("…[truncated]" if len(full) > TOOL_RESULT_CAP else "")
-        result_event = sse_result(tool_name, stored)
-        return tool_id, stored, event + result_event
+        return tool_id, stored, event + sse_result(tool_name, stored)
     except Exception as e:
         err = json.dumps({"error": str(e)})
         return tool_id, err, event + sse_error(str(e))
 
-# ── Agent stream generator ────────────────────────────────────────────────────
-async def agent_stream(query: str):
+# ── Request models ────────────────────────────────────────────────────────────
+class HistoryMessage(BaseModel):
+    role:    str   # "user" | "assistant"
+    content: str
+
+class ChatRequest(BaseModel):
+    query:       str
+    force_tools: bool                  = False
+    tool_hint:   Optional[str]         = None   # e.g. "internet_search"
+    history:     List[HistoryMessage]  = []
+
+# ── Agent stream ──────────────────────────────────────────────────────────────
+async def agent_stream(
+    query:       str,
+    force_tools: bool                 = False,
+    tool_hint:   Optional[str]        = None,
+    history:     List[HistoryMessage] = [],
+):
     registry  = app_state["registry"]
     raw_tools = app_state["raw_tools"]
 
-    use_tools = needs_tools(query)
+    use_tools = force_tools or needs_tools(query)
 
+    # Build history prefix — keep last 20 messages (10 pairs)
+    hist_msgs = [
+        {"role": m.role, "content": m.content}
+        for m in history[-20:]
+    ]
+
+    # ── Direct answer (no tools) — streamed token by token ──────────────────
     if not use_tools:
         yield sse_debug("conversation — answering directly")
-        messages = [
-            {"role": "system", "content": _SYSTEM_CHAT},
-            {"role": "user",   "content": query},
-        ]
-        resp   = await asyncio.to_thread(llm_chat, messages)
-        answer = resp.choices[0].message.content or ""
+        messages = (
+            [{"role": "system", "content": _SYSTEM_CHAT}]
+            + hist_msgs
+            + [{"role": "user", "content": query}]
+        )
+        stream = await asyncio.to_thread(llm_chat, messages, None, True)
+        answer = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                answer += delta
+                yield sse({"type": "token", "text": delta})
         yield sse_answer(answer)
         yield "data: [DONE]\n\n"
         return
 
-    # Tools path
+    # ── Tool path ─────────────────────────────────────────────────────────────
     injected = time_context() if needs_time_ctx(query) else ""
-    messages = [
-        {"role": "system", "content": system_tools(injected)},
-        {"role": "user",   "content": query},
-    ]
+    messages = (
+        [{"role": "system", "content": system_tools(injected, tool_hint)}]
+        + hist_msgs
+        + [{"role": "user", "content": query}]
+    )
     dedup = CallDedup()
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         yield sse_debug(f"LLM call #{iteration}")
-        resp = await asyncio.to_thread(llm_chat, messages, raw_tools)
-        msg  = resp.choices[0].message
-        raw  = msg.content or ""
 
-        if not msg.tool_calls:
+        # ── Stream this LLM call so tokens appear immediately ────────────────
+        stream = await asyncio.to_thread(llm_chat, messages, raw_tools, True)
+
+        # Accumulate streamed chunks; collect tool_calls in parallel
+        raw            = ""
+        tool_calls_acc = {}   # index -> {id, name, arguments}
+
+        for chunk in stream:
+            choice = chunk.choices[0]
+            delta  = choice.delta
+
+            # Accumulate text content
+            if delta.content:
+                raw += delta.content
+                yield sse({"type": "token", "text": delta.content})
+
+            # Accumulate tool call deltas
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {
+                            "id":        tc_delta.id or "",
+                            "name":      tc_delta.function.name or "" if tc_delta.function else "",
+                            "arguments": "",
+                        }
+                    if tc_delta.id:
+                        tool_calls_acc[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_acc[idx]["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+
+        # No tool calls → final answer already streamed token-by-token
+        if not tool_calls_acc:
             yield sse_answer(raw)
             yield "data: [DONE]\n\n"
             return
 
-        yield sse_debug(f"Round {iteration} — {len(msg.tool_calls)} tool call(s)")
+        yield sse_debug(f"Round {iteration} — {len(tool_calls_acc)} tool call(s)")
+
+        # Build fake tool_call objects compatible with execute_tool_sse
+        class _Fn:
+            def __init__(self, name, arguments): self.name = name; self.arguments = arguments
+        class _TC:
+            def __init__(self, id, fn): self.id = id; self.function = fn
+
+        tc_list = [
+            _TC(v["id"], _Fn(v["name"], v["arguments"]))
+            for v in tool_calls_acc.values()
+        ]
 
         messages.append({
-            "role": "assistant", "content": raw,
+            "role": "assistant",
+            "content": raw,
             "tool_calls": [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                for tc in msg.tool_calls
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tc_list
             ],
         })
 
         results = await asyncio.gather(
-            *[execute_tool_sse(tc, registry, dedup) for tc in msg.tool_calls]
+            *[execute_tool_sse(tc, registry, dedup) for tc in tc_list]
         )
 
         for tid, result, events in results:
@@ -272,18 +372,20 @@ async def agent_stream(query: str):
                     yield line + "\n\n"
             messages.append({"role": "tool", "tool_call_id": tid, "content": result})
 
-    # Fallback
+    # Fallback after max iterations
     yield sse_debug("Max iterations — forcing answer")
     messages.append({"role": "user", "content": "Give your final answer now. No more tool calls."})
-    resp   = await asyncio.to_thread(llm_chat, messages)
-    answer = resp.choices[0].message.content or ""
+    stream = await asyncio.to_thread(llm_chat, messages, None, True)
+    answer = ""
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content or ""
+        if delta:
+            answer += delta
+            yield sse({"type": "token", "text": delta})
     yield sse_answer(answer)
     yield "data: [DONE]\n\n"
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-class ChatRequest(BaseModel):
-    query: str
-
 @app.get("/health")
 async def health():
     registry = app_state.get("registry")
@@ -296,20 +398,24 @@ async def health():
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     return StreamingResponse(
-        agent_stream(req.query.strip()),
+        agent_stream(
+            req.query.strip(),
+            req.force_tools,
+            req.tool_hint,
+            req.history,
+        ),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control":    "no-cache",
             "X-Accel-Buffering": "no",
         },
     )
 
-# ── Serve static files (HTML/CSS/JS) ─────────────────────────────────────────
-# Resolve static dir relative to server.py so cwd doesn't matter
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# ── Static files ──────────────────────────────────────────────────────────────
+_HERE   = os.path.dirname(os.path.abspath(__file__))
 _STATIC = os.path.join(_HERE, "web")
 if not os.path.isdir(_STATIC):
-    _STATIC = _HERE   # fallback: HTML/CSS/JS alongside server.py
+    _STATIC = _HERE
 app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
 
 if __name__ == "__main__":
