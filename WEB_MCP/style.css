@@ -205,6 +205,64 @@ nav{
 .tk-check svg{ width:16px; height:16px; }
 .tk-check svg path{ stroke:var(--green-mid); }
 
+
+/* ── Markdown bubble styles ── */
+.bubble.md { white-space: normal; }
+.bubble.md h2{ font-size:.95em; font-weight:700; margin:8px 0 3px; }
+.bubble.md h3{ font-size:.9em;  font-weight:600; margin:6px 0 2px; }
+.bubble.md h4{ font-size:.87em; font-weight:600; margin:5px 0 2px; color:var(--dim); }
+.bubble.md ul{ list-style:none; padding:0; margin:4px 0; }
+.bubble.md li{ padding:1px 0 1px 14px; position:relative; font-size:.875rem; line-height:1.65; }
+.bubble.md li::before{ content:"•"; position:absolute; left:0; color:var(--green-mid); }
+.bubble.md strong{ font-weight:600; }
+.bubble.md em{ font-style:italic; }
+
+/* inline code */
+.icode{
+  background:var(--bg); border:1px solid var(--border); border-radius:4px;
+  padding:1px 5px; font-family:'Geist Mono',monospace; font-size:.82em;
+  color:var(--text);
+}
+
+/* key-value rows (weather / tool output) */
+.kv-row{
+  display:flex; gap:8px; align-items:baseline;
+  padding:1px 0; font-size:.85rem;
+}
+.kv-key{
+  color:var(--dim); font-size:.78rem; min-width:100px;
+  flex-shrink:0; font-family:'Geist Mono',monospace;
+}
+.kv-val{ color:var(--text); }
+
+/* ── Code blocks ── */
+.code-block{
+  margin:8px 0; border-radius:10px; overflow:hidden;
+  border:1px solid var(--border); background:#f6f8f6; font-size:.82rem;
+}
+.code-hdr{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:6px 14px; background:var(--surface);
+  border-bottom:1px solid var(--border);
+}
+.code-lang{
+  font-size:.65rem; font-weight:700; color:var(--dim);
+  text-transform:uppercase; letter-spacing:.08em;
+  font-family:'Geist Mono',monospace;
+}
+.code-copy{
+  background:none; border:1px solid var(--border); color:var(--dim);
+  font-size:.65rem; padding:2px 9px; border-radius:5px;
+  cursor:pointer; font-family:inherit; transition:all .15s;
+}
+.code-copy:hover{ border-color:var(--green); color:var(--green-mid); background:var(--green-dim); }
+.code-block pre{
+  margin:0; padding:14px 16px; overflow-x:auto; line-height:1.65;
+  color:var(--text); font-family:'Geist Mono',monospace; font-size:.82rem;
+}
+.code-block pre::-webkit-scrollbar{ height:3px; }
+.code-block pre::-webkit-scrollbar-thumb{ background:var(--border); border-radius:2px; }
+
 /* ── Debug sidebar ── */
 #dbg{
   position:fixed; right:0; top:52px; bottom:0; width:360px;

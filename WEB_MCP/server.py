@@ -46,7 +46,9 @@ _LIVE_RE = re.compile(
     r"score|match|game|news|trend|"
     r"search(\s+for)?|look\s+up|find\s+out|"
     r"age\s+of|how\s+old\s+is|net\s+worth|"
-    r"profit|loss|closed|open|market|trading)\b",
+    r"profit|loss|closed|open|market|trading|"
+    r"what time|what('s| is) the time|time (is|it)|"
+    r"date today|current date|current time)\b",
     re.IGNORECASE,
 )
 _KNOWLEDGE_RE = re.compile(
@@ -71,7 +73,7 @@ def needs_tools(query: str) -> bool:
     return False
 
 # ── Time helpers ──────────────────────────────────────────────────────────────
-_TIME_RE    = re.compile(r"\b(current|now|today|tonight|live|latest|recent|right\s+now|this\s+(week|month|year)|at the moment|as of|ongoing|present(ly)?)\b", re.IGNORECASE)
+_TIME_RE    = re.compile(r"\b(current|now|today|tonight|live|latest|recent|right\s+now|this\s+(week|month|year)|at the moment|as of|ongoing|present(ly)?|what time|what('s| is) the time|time (is|it is)|date (is|today))\b", re.IGNORECASE)
 _WEATHER_RE = re.compile(r"\b(weather|forecast|rain|snow|wind|humidity|feels like|temperature)\b", re.IGNORECASE)
 
 def needs_time_ctx(q: str) -> bool:

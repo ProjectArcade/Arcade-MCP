@@ -42,19 +42,133 @@ async function checkHealth() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const ts    = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
-const tstr  = () => new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-const esc   = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-const sc    = () => chatEl.scrollTop = chatEl.scrollHeight;
-const uid   = () => "_" + Math.random().toString(36).slice(2, 9);
-const wait  = ms => new Promise(r => setTimeout(r, ms));
+const ts   = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
+const tstr = () => new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+const esc  = s  => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const sc   = () => { chatEl.scrollTop = chatEl.scrollHeight; };
+const uid  = () => "_" + Math.random().toString(36).slice(2, 9);
+const wait = ms => new Promise(r => setTimeout(r, ms));
 
 function dlog(type, txt) {
   const el = document.createElement("div");
-  el.className = `de ${type}`;
+  el.className = "de " + type;
   el.innerHTML = `<div class="de-ts">${ts()}</div><div class="de-body">${esc(txt)}</div>`;
   dLog.appendChild(el);
   dLog.scrollTop = dLog.scrollHeight;
+}
+
+// ── Copy code ─────────────────────────────────────────────────────────────────
+function copyCode(btn) {
+  const pre = btn.closest(".code-block").querySelector("pre");
+  navigator.clipboard.writeText(pre.innerText).then(() => {
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = "Copy"; }, 1800);
+  });
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────────────────
+function md(raw) {
+  if (!raw) return "";
+
+  // Step 1: extract fenced code blocks BEFORE any escaping
+  const blocks = [];
+  let text = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    blocks.push({ lang: (lang || "code").trim(), code: code.trimEnd() });
+    return "\x00BLOCK" + (blocks.length - 1) + "\x00";
+  });
+
+  // Step 2: escape HTML in the non-code parts
+  text = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  // Step 3: inline formatting
+  // bold+italic
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+  // bold
+  text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // italic (only when surrounded by non-space)
+  text = text.replace(/\*(\S[^*]*?\S|\S)\*/g, "<em>$1</em>");
+  // inline code
+  text = text.replace(/`([^`\n]+)`/g,
+    '<code class="icode">$1</code>');
+
+  // Step 4: block-level (line by line)
+  const lines = text.split("\n");
+  const out = [];
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // code block placeholder
+    if (/^\x00BLOCK(\d+)\x00$/.test(line)) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      const idx = parseInt(line.match(/\d+/)[0]);
+      const { lang, code } = blocks[idx];
+      const escaped = code.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      out.push(
+        `<div class="code-block">` +
+        `<div class="code-hdr">` +
+        `<span class="code-lang">${esc(lang)}</span>` +
+        `<button class="code-copy" onclick="copyCode(this)">Copy</button>` +
+        `</div><pre>${escaped}</pre></div>`
+      );
+      continue;
+    }
+
+    // headings
+    if (/^### /.test(line)) { out.push(`<h4>${line.slice(4)}</h4>`); continue; }
+    if (/^## /.test(line))  { out.push(`<h3>${line.slice(3)}</h3>`); continue; }
+    if (/^# /.test(line))   { out.push(`<h2>${line.slice(2)}</h2>`); continue; }
+
+    // bullet list
+    const bullet = line.match(/^[ \t]*[-*•] (.+)/);
+    if (bullet) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${bullet[1]}</li>`);
+      continue;
+    }
+
+    // numbered list
+    const numbered = line.match(/^(\d+)\. (.+)/);
+    if (numbered) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${numbered[1]}. ${numbered[2]}</li>`);
+      continue;
+    }
+
+    // end list
+    if (inList && line.trim() === "") {
+      out.push("</ul>");
+      inList = false;
+      out.push("<br>");
+      continue;
+    }
+
+    // tool key : value lines (e.g. "  condition  : Haze")
+    const kv = line.match(/^([ \t]*)([a-zA-Z][\w\s]{1,25}?)\s*:\s*(.+)$/);
+    if (kv && !line.startsWith("http") && !line.includes("://")) {
+      out.push(
+        `<div class="kv-row">` +
+        `<span class="kv-key">${kv[2].trim()}</span>` +
+        `<span class="kv-val">${kv[3]}</span></div>`
+      );
+      continue;
+    }
+
+    // blank line → spacing
+    if (line.trim() === "") {
+      if (out.length && out[out.length-1] !== "<br>") out.push("<br>");
+      continue;
+    }
+
+    out.push(`<span>${line}</span><br>`);
+  }
+
+  if (inList) out.push("</ul>");
+  return out.join("\n");
 }
 
 // ── SVG icons ─────────────────────────────────────────────────────────────────
@@ -95,9 +209,9 @@ class Turn {
     this.collapsed = false;
     this.toolsUsed = [];
     this.hasThink  = false;
+    this.isDirect  = false;
   }
 
-  // ── Thinking card ──────────────────────────────────────
   initThink() {
     if (this.hasThink) return;
     this.hasThink = true;
@@ -105,21 +219,19 @@ class Turn {
     const hid = this.id + "_h";
     const tid = this.id + "_t";
     const iid = this.id + "_i";
-
     const wrap = document.createElement("div");
     wrap.className = "msg bot";
-    wrap.innerHTML = `
-      <div class="msg-row">
-        <div class="bot-av">⚙</div>
-        <div class="think-wrap">
-          <div class="tk-hdr" id="${hid}" onclick="turns['${this.id}'].toggle()">
-            <div class="tk-star" id="${iid}">${SPIN_SVG}</div>
-            <span class="tk-title" id="${tid}">Working…</span>
-            <span class="tk-chev">▼</span>
-          </div>
-          <div class="tk-steps" id="${sid}"></div>
-        </div>
-      </div>`;
+    wrap.innerHTML =
+      `<div class="msg-row">` +
+      `<div class="bot-av">⚙</div>` +
+      `<div class="think-wrap">` +
+      `<div class="tk-hdr" id="${hid}" onclick="turns['${this.id}'].toggle()">` +
+      `<div class="tk-star" id="${iid}">${SPIN_SVG}</div>` +
+      `<span class="tk-title" id="${tid}">Working…</span>` +
+      `<span class="tk-chev">▼</span>` +
+      `</div>` +
+      `<div class="tk-steps" id="${sid}"></div>` +
+      `</div></div>`;
     ci.appendChild(wrap);
     this.stepsEl = document.getElementById(sid);
     sc();
@@ -131,8 +243,7 @@ class Turn {
     const hdr   = document.getElementById(this.id + "_h");
     if (steps) steps.classList.toggle("collapsed", this.collapsed);
     if (hdr)   hdr.classList.toggle("collapsed",   this.collapsed);
-    // Update chevron aria hint
-    const chev = hdr?.querySelector(".tk-chev");
+    const chev = hdr && hdr.querySelector(".tk-chev");
     if (chev) chev.textContent = this.collapsed ? "▶" : "▼";
   }
 
@@ -146,14 +257,13 @@ class Turn {
     const icon = TOOL_ICO[toolName] || TOOL_ICO._default;
     const el = document.createElement("div");
     el.className = "tk-step";
-    el.innerHTML = `
-      <div class="tk-ico">${icon}</div>
-      <div class="tk-info">
-        <span class="tk-lbl">${esc(label)}</span>
-        ${tag ? `<span class="tk-tag">${esc(tag)}</span>` : ""}
-      </div>`;
+    el.innerHTML =
+      `<div class="tk-ico">${icon}</div>` +
+      `<div class="tk-info">` +
+      `<span class="tk-lbl">${esc(label)}</span>` +
+      (tag ? `<span class="tk-tag">${esc(tag)}</span>` : "") +
+      `</div>`;
     this.stepsEl.appendChild(el);
-    this.stepsEl.scrollTop = this.stepsEl.scrollHeight;
     sc();
   }
 
@@ -161,15 +271,14 @@ class Turn {
     if (!this.stepsEl) return;
     const el = document.createElement("div");
     el.className = "tk-step";
-    el.innerHTML = `
-      <div class="tk-ico">${TOOL_ICO.internet_search}</div>
-      <div class="tk-info" style="flex:1">
-        <span class="tk-lbl">Searching the web</span>
-        <span class="tk-tag">${esc(String(query).slice(0, 55))}</span>
-      </div>
-      <div class="tk-dots"><span></span><span></span><span></span></div>`;
+    el.innerHTML =
+      `<div class="tk-ico">${TOOL_ICO.internet_search}</div>` +
+      `<div class="tk-info" style="flex:1">` +
+      `<span class="tk-lbl">Searching the web</span>` +
+      `<span class="tk-tag">${esc(String(query).slice(0,55))}</span>` +
+      `</div>` +
+      `<div class="tk-dots"><span></span><span></span><span></span></div>`;
     this.stepsEl.appendChild(el);
-    this.stepsEl.scrollTop = this.stepsEl.scrollHeight;
     sc();
   }
 
@@ -177,9 +286,9 @@ class Turn {
     if (!this.stepsEl) return;
     const el = document.createElement("div");
     el.className = "tk-step";
-    el.innerHTML = `
-      <div class="tk-ico tk-check">${DONE_SVG}</div>
-      <div class="tk-info"><span class="tk-lbl" style="color:#00cc00">Got response</span></div>`;
+    el.innerHTML =
+      `<div class="tk-ico tk-check">${DONE_SVG}</div>` +
+      `<div class="tk-info"><span class="tk-lbl" style="color:var(--green-mid)">Got response</span></div>`;
     this.stepsEl.appendChild(el);
     sc();
   }
@@ -189,23 +298,22 @@ class Turn {
     const ttl = document.getElementById(this.id + "_t");
     if (ico) { ico.innerHTML = DONE_SVG; ico.classList.add("done"); }
     if (ttl) ttl.textContent = this.toolsUsed.length
-      ? `Used: ${this.toolsUsed.join(", ")}` : "Done";
+      ? "Used: " + this.toolsUsed.join(", ") : "Done";
     setTimeout(() => { if (!this.collapsed) this.toggle(); }, 700);
   }
 
-  // ── Answer bubble ──────────────────────────────────────
   initBubble() {
     if (this.bubbleEl) return;
     const bid  = this.id + "_b";
     const tsid = this.id + "_ts";
     const wrap = document.createElement("div");
     wrap.className = "msg bot";
-    wrap.innerHTML = `
-      <div class="msg-row">
-        <div class="bot-av">⚙</div>
-        <div class="bubble" id="${bid}"><span class="cur"></span></div>
-      </div>
-      <div class="msg-ts" id="${tsid}"></div>`;
+    wrap.innerHTML =
+      `<div class="msg-row">` +
+      `<div class="bot-av">⚙</div>` +
+      `<div class="bubble md" id="${bid}"><span class="cur"></span></div>` +
+      `</div>` +
+      `<div class="msg-ts" id="${tsid}"></div>`;
     ci.appendChild(wrap);
     this.bubbleEl = document.getElementById(bid);
     this.tsEl     = document.getElementById(tsid);
@@ -214,12 +322,12 @@ class Turn {
 
   stream(text) {
     if (this.bubbleEl)
-      this.bubbleEl.innerHTML = esc(text) + '<span class="cur"></span>';
+      this.bubbleEl.innerHTML = md(text) + '<span class="cur"></span>';
     sc();
   }
 
   finalize(text) {
-    if (this.bubbleEl) this.bubbleEl.textContent = text;
+    if (this.bubbleEl) this.bubbleEl.innerHTML = md(text);
     if (this.tsEl)     this.tsEl.textContent = tstr();
     sc();
   }
@@ -231,13 +339,13 @@ const turns = {};
 function addUser(text) {
   const el = document.createElement("div");
   el.className = "msg user";
-  el.innerHTML = `<div class="msg-row"><div class="bubble">${esc(text)}</div></div>
-                  <div class="msg-ts">${tstr()}</div>`;
+  el.innerHTML =
+    `<div class="msg-row"><div class="bubble">${esc(text)}</div></div>` +
+    `<div class="msg-ts">${tstr()}</div>`;
   ci.appendChild(el);
   sc();
 }
 
-// ── Word-by-word streaming effect ─────────────────────────────────────────────
 async function streamWords(turn, text) {
   turn.initBubble();
   const words = text.split(" ");
@@ -259,7 +367,7 @@ async function send() {
   sbtn.disabled = true;
 
   addUser(query);
-  dlog("info", `→ ${query}`);
+  dlog("info", "→ " + query);
 
   const turn = new Turn();
   turns[turn.id] = turn;
@@ -271,7 +379,7 @@ async function send() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
 
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -296,37 +404,38 @@ async function send() {
 
           case "debug":
             dlog("info", evt.text);
-            // Show thinking block only for tool-using queries
-            if (!turn.hasThink && !evt.text.includes("conversation")) {
+            if (!turn.hasThink) {
               turn.initThink();
+              if (evt.text.includes("conversation") || evt.text.includes("directly")) {
+                turn.setTitle("Thinking…");
+                turn.isDirect = true;
+              }
             }
             break;
 
-          case "tool_call": {
+          case "tool_call":
             if (!turn.hasThink) turn.initThink();
             turn.toolsUsed.push(evt.name);
-            dlog("tool", `→ ${evt.name}(${JSON.stringify(evt.args)})`);
-
+            dlog("tool", "→ " + evt.name + "(" + JSON.stringify(evt.args) + ")");
             if (evt.name === "internet_search") {
-              turn.addSearching(evt.args?.query || query);
+              turn.addSearching(evt.args && evt.args.query ? evt.args.query : query);
               turn.setTitle("Searching the web…");
             } else {
               const label = TOOL_LABELS[evt.name] || evt.name;
               const tag   = Object.values(evt.args || {}).join(", ").slice(0, 55) || null;
               turn.addStep(evt.name, label, tag);
-              turn.setTitle(`Using ${evt.name}…`);
+              turn.setTitle("Using " + evt.name + "…");
             }
             break;
-          }
 
           case "tool_result":
-            dlog("result", `← ${evt.name}: ${evt.result}`);
+            dlog("result", "← " + evt.name + ": " + evt.result);
             if (turn.hasThink) turn.addDone();
             break;
 
           case "answer":
             answer = evt.text;
-            dlog("answer", `${answer.length} chars`);
+            dlog("answer", answer.length + " chars");
             if (turn.hasThink) {
               turn.finish();
               await wait(750);
@@ -338,7 +447,7 @@ async function send() {
             dlog("error", evt.text);
             if (turn.hasThink) turn.finish();
             turn.initBubble();
-            turn.finalize(`⚠ ${evt.text}`);
+            turn.finalize("⚠ " + evt.text);
             break;
         }
       }
@@ -353,7 +462,7 @@ async function send() {
   } catch (e) {
     if (turn.hasThink) turn.finish();
     turn.initBubble();
-    turn.finalize(`⚠ ${e.message}`);
+    turn.finalize("⚠ " + e.message);
     dlog("error", e.message);
     document.getElementById("abadge").className = "badge off";
     document.getElementById("abadge").textContent = "OFFLINE";
@@ -364,7 +473,7 @@ async function send() {
   }
 }
 
-// ── Textarea auto-resize + keyboard ──────────────────────────────────────────
+// ── Textarea ──────────────────────────────────────────────────────────────────
 qEl.addEventListener("input", () => {
   qEl.style.height = "24px";
   qEl.style.height = Math.min(qEl.scrollHeight, 130) + "px";
@@ -379,6 +488,5 @@ function fill(t) {
   qEl.dispatchEvent(new Event("input"));
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
 checkHealth();
-setInterval(checkHealth, 30000);   // re-check every 30s
+setInterval(checkHealth, 30000);
