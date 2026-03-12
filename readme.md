@@ -415,7 +415,7 @@ uv pip install -r requirements.txt
 
 ## 📄 License
 
-MIT License
+ GNU GENERAL PUBLIC LICENSE
 
 
 
