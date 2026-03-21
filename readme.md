@@ -51,26 +51,26 @@ This project is intended for:
 ---
 
 ### Basic Knowledge
-<img src="./docs/images/basicknowledge.png" width="700"/>
+<img src="./docs/images/basicknowledge.png" width="550"/>
 
 ### Web Search
-<img src="./docs/images/internet.png" width="700"/>
+<img src="./docs/images/internet.png" width="550"/>
 
 ### Slash Commands
-<img src="./docs/images/slashCommand.png" width="700"/>
+<img src="./docs/images/slashCommand.png" width="550"/>
 
 ---
 
 ### Skills
 
 #### Code Review
-<img src="./docs/images/CodeExplainSkill.png" width="700"/>
+<img src="./docs/images/CodeExplainSkill.png" width="550"/>
 
 #### Documentation
-<img src="./docs/images/doc_Skill.png" width="700"/>
+<img src="./docs/images/doc_Skill.png" width="550"/>
 
 #### Summarization
-<img src="./docs/images/summarization_skills.png" width="700"/>
+<img src="./docs/images/summarization_skills.png" width="550"/>
 
 
 
