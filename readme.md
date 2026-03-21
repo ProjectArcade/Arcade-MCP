@@ -41,6 +41,40 @@ This project is intended for:
 ![Web Search](./docs/images/webSearch.png)
 
 
+### MCP Web Agent — ARIA
+
+> **ARIA** is a web agent that wraps all CLI tools in a clean GUI, so you can skip the terminal entirely.
+> It supports `/` slash commands for manual tool selection, or automatically picks the right tool based on your query.
+>
+> ⚠️ ARIA is still in active development — automatic tool selection may behave inconsistently on lower-end models. Using a higher-end model is recommended for best results.
+
+---
+
+### Basic Knowledge
+![Basic Knowledge](./docs/images/basicknowledge.png)
+
+### Web Search
+![Web Search](./docs/images/internet.png)
+
+### Slash Commands
+![Slash Commands](./docs/images/slashCommand.png)
+
+---
+
+### Skills
+
+#### Code Review
+![Code Review Skill](./docs/images/CodeExplainSkill.png)
+
+#### Documentation
+![Documentation Skill](./docs/images/doc_Skill.png)
+
+#### Summarization
+![Summarization Skill](./docs/images/summarization.png)
+
+
+
+
 
 ### System Architecture Overview
 
